@@ -1,0 +1,25 @@
+# Secrets (NEVER commit)
+.env.json
+*.env
+
+# Playwright browser data
+browser_data/
+playwright_profiles/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
