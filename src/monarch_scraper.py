@@ -38,43 +38,34 @@ MONARCH_TRANSACTIONS_URL = "https://app.monarchmoney.com/transactions"
 LOGIN_URL_FRAGMENT = "/login"
 
 # Page load sentinel — wait for this before attempting extraction.
-# If this selector breaks, Monarch likely restructured the main nav.
-SELECTOR_APP_LOADED = "nav, [role='navigation'], main, [data-testid='sidebar']"
-
-# Transaction list container. If zero rows are found, try inspecting the
-# page and updating this selector.
-SELECTOR_TRANSACTION_ROW = (
-    "[data-testid='transaction-row'], "
-    "[class*='TransactionRow'], "
-    "[class*='transaction-row']"
+# Monarch uses styled-components; there is no <nav>, <main>, or role='navigation'.
+SELECTOR_APP_LOADED = (
+    "[class*='SideBar__Root'], "
+    "[class*='TransactionsList__ListContainer']"
 )
 
-# Field selectors within each row. These are tried in order; first match wins.
-SELECTORS_DATE = [
-    "[data-testid='transaction-date']",
-    "[class*='TransactionDate']",
-    "time",
-]
+# Section headers separate transaction rows by date (e.g. "March 3").
+# The date is on the HEADER, not inside the row. Headers and rows are
+# siblings in the list container and must be processed in document order.
+SELECTOR_SECTION_HEADER = "[class*='TransactionsList__StyledSectionHeader']"
+
+# Individual transaction row.
+SELECTOR_TRANSACTION_ROW = "[class*='TransactionOverview__Root']"
+
+# Field selectors within a transaction row. Date is omitted — it comes
+# from the section header above the row, not from the row itself.
 SELECTORS_DESCRIPTION = [
-    "[data-testid='transaction-merchant-name']",
-    "[data-testid='transaction-description']",
-    "[class*='MerchantName']",
-    "[class*='merchant']",
+    "[class*='TransactionMerchantSelect']",
 ]
 SELECTORS_AMOUNT = [
-    "[data-testid='transaction-amount']",
-    "[class*='TransactionAmount']",
-    "[class*='amount']",
+    "[class*='TransactionOverview__Amount']",
 ]
 SELECTORS_CATEGORY = [
-    "[data-testid='transaction-category']",
-    "[class*='CategoryName']",
-    "[class*='category']",
+    "[class*='TransactionOverview__Category']",
 ]
 SELECTORS_ACCOUNT = [
-    "[data-testid='transaction-account']",
-    "[class*='AccountName']",
-    "[class*='account-name']",
+    "[class*='TransactionAccount__Name']",
+    "[class*='TransactionAccount__Root']",
 ]
 
 # Monarch shows ~50 rows by default. Scroll this many times to load more.
@@ -277,58 +268,81 @@ def _scroll_to_load_transactions(page: object) -> None:
 
 
 def _parse_all_rows(page: object) -> list[TransactionRecord]:
-    """Locate all transaction rows on the page and parse each one."""
+    """Locate all section headers and transaction rows, parse each row.
+
+    Monarch groups rows under date section headers
+    (TransactionsList__StyledSectionHeader). The date is on the header, not
+    inside the row. Headers and rows are queried together so document order
+    is preserved; the current date is updated whenever a header is seen.
+    """
     from playwright.sync_api import Page
 
     assert isinstance(page, Page)
 
-    rows = page.query_selector_all(SELECTOR_TRANSACTION_ROW)
-    logger.debug("Found %d candidate transaction rows", len(rows))
+    # Combined selector preserves document order across both element types.
+    all_elements = page.query_selector_all(
+        f"{SELECTOR_SECTION_HEADER}, {SELECTOR_TRANSACTION_ROW}"
+    )
+    logger.debug("Found %d section headers + transaction rows", len(all_elements))
 
+    current_date: date | None = None
     transactions: list[TransactionRecord] = []
     failed_rows = 0
+    row_index = 0
 
-    for i, row in enumerate(rows):
+    for element in all_elements:
+        class_attr = element.get_attribute("class") or ""
+
+        if "TransactionsList__StyledSectionHeader" in class_attr:
+            date_str = element.inner_text().strip()
+            parsed = _parse_date(date_str)
+            if parsed:
+                current_date = parsed
+                logger.debug("Section header date: %s", current_date)
+            else:
+                logger.debug("Could not parse section header date: %r", date_str)
+            continue
+
+        # Transaction row — skip if no section header has been seen yet.
+        if current_date is None:
+            logger.debug("Row skipped — no section header date seen yet")
+            continue
+
         try:
-            txn = _parse_row(row, i)
+            txn = _parse_row(element, row_index, current_date)
             if txn is not None:
                 transactions.append(txn)
         except Exception as exc:
             failed_rows += 1
-            logger.debug("Row %d parse failed (skipping): %s", i, exc)
+            logger.debug("Row %d parse failed (skipping): %s", row_index, exc)
+        row_index += 1
 
     if failed_rows > 0:
         logger.warning(
             "%d of %d rows failed to parse and were skipped",
             failed_rows,
-            len(rows),
+            row_index,
         )
 
     return transactions
 
 
-def _parse_row(row: object, index: int) -> TransactionRecord | None:
+def _parse_row(row: object, index: int, row_date: date) -> TransactionRecord | None:
     """Parse a single transaction row element into a TransactionRecord.
 
+    The date is supplied by the caller from the section header above this row.
     Returns None if the row does not look like a real transaction.
     """
-    date_str = _get_text_from_selectors(row, SELECTORS_DATE)
     description = _get_text_from_selectors(row, SELECTORS_DESCRIPTION)
     amount_str = _get_text_from_selectors(row, SELECTORS_AMOUNT)
     category = _get_text_from_selectors(row, SELECTORS_CATEGORY) or ""
     account = _get_text_from_selectors(row, SELECTORS_ACCOUNT) or ""
 
-    # Skip rows missing the essential fields
-    if not date_str or not description or not amount_str:
+    if not description or not amount_str:
         logger.debug(
-            "Row %d skipped — missing fields: date=%r description=%r amount=%r",
-            index, date_str, description, amount_str,
+            "Row %d skipped — missing fields: description=%r amount=%r",
+            index, description, amount_str,
         )
-        return None
-
-    parsed_date = _parse_date(date_str)
-    if parsed_date is None:
-        logger.debug("Row %d: could not parse date %r, skipping", index, date_str)
         return None
 
     amount = _parse_amount(amount_str)
@@ -337,7 +351,7 @@ def _parse_row(row: object, index: int) -> TransactionRecord | None:
         return None
 
     return TransactionRecord(
-        date=parsed_date,
+        date=row_date,
         description=description.strip(),
         amount=amount,
         account=account.strip(),

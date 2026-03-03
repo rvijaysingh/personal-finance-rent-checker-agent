@@ -239,6 +239,8 @@ The following are out of scope for the current build. Do not build
 abstractions or frameworks for these. Just avoid hardcoding decisions
 that would make them difficult later.
 
+- LLM will be passed tenant name in case it needs to check the
+  transaction detail to try and identify a rent payment
 - Mortgage payment checking: Will reuse the same scraper and matching
   pipeline. The matching steps should accept different "check types"
   from config (each with their own category labels, expected amounts,
