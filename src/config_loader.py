@@ -265,7 +265,7 @@ def _validate_property(data: object, index: int) -> PropertyConfig:
         raise ConfigError(f"missing or invalid field: {label} must be an object")
 
     name = _req_str(data, "name", label)
-    tenant_name = _req_str(data, "tenant_name", label)
+    merchant_name = _req_str(data, "merchant_name", label)
     category_label = _req_str(data, "category_label", label)
     account = _req_str(data, "account", label)
 
@@ -298,7 +298,7 @@ def _validate_property(data: object, index: int) -> PropertyConfig:
 
     return PropertyConfig(
         name=name,
-        tenant_name=tenant_name,
+        merchant_name=merchant_name,
         expected_rent=expected_rent,
         due_day=raw_due_day,
         grace_period_days=raw_grace,
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     print(f"  Properties ({len(cfg.properties)}):")
     for prop in cfg.properties:
         print(
-            f"    [{prop.name}] tenant={prop.tenant_name!r}  "
+            f"    [{prop.name}] merchant={prop.merchant_name!r}  "
             f"rent=${prop.expected_rent:.2f}  due=day {prop.due_day}  "
             f"grace={prop.grace_period_days}d  "
             f"category={prop.category_label!r}"

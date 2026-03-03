@@ -279,7 +279,7 @@ def _step3_llm_match(
     prompt = (
         prompt_template
         .replace("{{property_name}}", prop.name)
-        .replace("{{tenant_name}}", prop.tenant_name)
+        .replace("{{merchant_name}}", prop.merchant_name)
         .replace("{{expected_rent}}", f"{prop.expected_rent:.2f}")
         .replace("{{due_day}}", str(prop.due_day))
         .replace("{{grace_period_days}}", str(prop.grace_period_days))

@@ -43,7 +43,7 @@ class PropertyConfig:
     """Configuration for a single rental property."""
 
     name: str
-    tenant_name: str
+    merchant_name: str
     expected_rent: float
     due_day: int              # day of month rent is due (1–28)
     grace_period_days: int    # days after due_day still considered on-time

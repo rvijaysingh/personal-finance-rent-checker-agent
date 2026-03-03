@@ -42,7 +42,7 @@ def make_prop(
 ) -> PropertyConfig:
     return PropertyConfig(
         name=name,
-        tenant_name=tenant,
+        merchant_name=tenant,
         expected_rent=rent,
         due_day=due_day,
         grace_period_days=grace,

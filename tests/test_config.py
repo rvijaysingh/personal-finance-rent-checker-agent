@@ -44,7 +44,7 @@ def _make_agent_config(tmp_path: Path, **overrides) -> Path:
         "properties": [
             {
                 "name": "Links Lane",
-                "tenant_name": "Alice Smith",
+                "merchant_name": "Alice Smith",
                 "expected_rent": 1500.00,
                 "due_day": 1,
                 "grace_period_days": 5,
@@ -131,7 +131,7 @@ def test_load_config_env_path_override_works(tmp_path, monkeypatch):
     agent_data = {
         "scraper_headless": True,
         "properties": [{
-            "name": "A", "tenant_name": "T", "expected_rent": 100.0,
+            "name": "A", "merchant_name": "T", "expected_rent": 100.0,
             "due_day": 1, "grace_period_days": 3,
             "category_label": "Cat A", "account": "Chase",
         }],
@@ -294,7 +294,7 @@ def test_validate_property_invalid_due_day_raises(bad_due_day):
     """due_day outside 1–28 raises ConfigError."""
     data = {
         "name": "Test",
-        "tenant_name": "T",
+        "merchant_name": "T",
         "expected_rent": 1000.0,
         "due_day": bad_due_day,
         "grace_period_days": 5,
@@ -310,7 +310,7 @@ def test_validate_property_invalid_expected_rent_raises(bad_rent):
     """expected_rent <= 0 or non-numeric raises ConfigError."""
     data = {
         "name": "Test",
-        "tenant_name": "T",
+        "merchant_name": "T",
         "expected_rent": bad_rent,
         "due_day": 1,
         "grace_period_days": 5,
@@ -326,7 +326,7 @@ def test_validate_property_invalid_grace_period_raises(bad_grace):
     """grace_period_days < 0 or non-integer raises ConfigError."""
     data = {
         "name": "Test",
-        "tenant_name": "T",
+        "merchant_name": "T",
         "expected_rent": 1000.0,
         "due_day": 1,
         "grace_period_days": bad_grace,
@@ -341,7 +341,7 @@ def test_validate_property_valid_returns_propertyconfig():
     """A valid property dict returns a PropertyConfig."""
     data = {
         "name": "Links Lane",
-        "tenant_name": "Alice",
+        "merchant_name": "Alice",
         "expected_rent": 1500.0,
         "due_day": 1,
         "grace_period_days": 5,
