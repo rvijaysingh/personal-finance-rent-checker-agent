@@ -372,7 +372,114 @@ payments) and harder to test independently.
 
 ---
 
+### DD9: Shared Type Module (`src/models.py`)
+
+**Decision:** Define all shared data types (`TransactionRecord`, `PropertyConfig`,
+`PropertyResult`, `PaymentStatus`) in a dedicated `src/models.py` module rather
+than in the module that first produces each type.
+
+**Context:** `TransactionRecord` is created by `monarch_scraper` and consumed by
+`transaction_matcher`. `PropertyResult` is created by `transaction_matcher` and
+consumed by `notifier` and `orchestrator`. `PropertyConfig` is created by
+`config_loader` and consumed by `transaction_matcher` and tests. If each type lived
+in its producing module, consumers would import from producers — creating dependencies
+between modules that should not know about each other (e.g., `notifier` importing
+from `transaction_matcher`). This either forces awkward coupling or causes circular
+imports as the module graph grows.
+
+**Options Considered:**
+- *Types live in their producing module:* `TransactionRecord` in `monarch_scraper`,
+  `PropertyResult` in `transaction_matcher`. Natural coupling but forces consumers to
+  import the producing module, creating a transitive dependency chain.
+- *All types in `config_loader`:* `config_loader` is already imported first by
+  everything. Works, but mixes configuration logic with domain type definitions —
+  unrelated concerns in one file.
+- *Dedicated `src/models.py`:* A thin module with no logic, only type definitions.
+  Every module that needs a type imports from `models` — never from another functional
+  module.
+
+**Chosen Approach:** Dedicated `src/models.py`. All four shared types live there.
+`PropertyConfig` is implemented as a `dataclass` (not `TypedDict`) to simplify
+construction in tests without dict literal syntax.
+
+**Tradeoffs:**
+- *Optimizes for:* No circular import risk; each module's imports are simple and
+  acyclic (`models` imports nothing from `src`); types are independently testable
+  without instantiating a scraper or matcher.
+- *Sacrifices:* Adds a file not listed in the original project structure spec.
+  Developers must know to look in `models.py` rather than the producing module when
+  tracing a type's definition.
+- *Revisit if:* The type count grows large enough to warrant splitting by domain
+  (e.g., `scraper_models.py`, `matcher_models.py`), or if the project adopts a
+  schema validation library (e.g., `pydantic`) that changes how types are declared.
+
+---
+
+### DD10: `completed_email_failed` Status and Email Retry
+
+**Decision:** Distinguish "check succeeded but email delivery failed" from "check
+failed" by writing `overall_status: "completed_email_failed"` to `run_history.json`
+on SMTP failure. On the next invocation, the orchestrator detects this status and
+retries email delivery using the stored `PropertyResult` data — without re-running
+the scraper or matching pipeline.
+
+**Context:** SMTP delivery can fail independently of the check itself (expired Gmail
+app password, transient network error, rate limit). Two naive approaches both produce
+bad outcomes: marking the run "failed" causes the full check to re-run on the next
+invocation (unnecessary scraping, risk of different results if transactions changed,
+missed notification window if re-run is delayed); marking it "completed" prevents
+duplicate checks but leaves the operator permanently uninformed. A third status that
+preserves the check results and triggers an email-only retry solves both problems.
+
+**Options Considered:**
+- *Mark as `failed` on SMTP error:* Simple. Next run re-scrapes and re-matches. But
+  wastes time, and if the re-run is delayed past the end of the month, current-month
+  data may be gone.
+- *Mark as `completed` and accept missed notification:* Prevents duplicate checks.
+  Operator never receives the summary — defeats the agent's primary purpose.
+- *Separate `completed_email_failed` status with email retry:* More complex but
+  ensures the operator receives the summary, avoids unnecessary re-checking, and
+  preserves idempotency.
+
+**Chosen Approach:** `completed_email_failed` status. `run_history.json` stores the
+full serialised `PropertyResult` list alongside the status. On the next invocation,
+the orchestrator loads these stored results and calls `notifier` directly, bypassing
+the scraper and matcher entirely. On successful retry, the record is updated to
+`completed`.
+
+**Tradeoffs:**
+- *Optimizes for:* Operator always eventually receives the payment summary; the
+  expensive scrape-and-match pipeline is not re-run for a delivery failure that
+  has nothing to do with the data; idempotency is maintained regardless of SMTP
+  reliability.
+- *Sacrifices:* `run_history.json` must store enough `PropertyResult` data to
+  reconstruct results without re-running the pipeline (amounts, dates, notes). This
+  adds modest complexity to both the write path (serialisation) and the retry path
+  (deserialisation). Two code paths in the orchestrator must be maintained.
+- *Cost:* The stored result data is small (a few KB per run). No meaningful storage
+  impact.
+- *Revisit if:* `run_history.json` is replaced with a database (where stored results
+  can be queried and reconstructed more reliably), or if the email-only retry path
+  proves brittle enough that a full re-run is preferable.
+
+---
+
 ## 5. Module Descriptions
+
+### `models.py`
+**Responsibility:** Define all shared data types used across modules. Contains
+no logic — only type definitions.
+
+**Inputs:** None (imported by other modules)
+
+**Outputs:** `PaymentStatus`, `TransactionRecord`, `PropertyConfig`, `PropertyResult`
+
+**Key behavior:** Imported by every module that produces or consumes these types.
+`PropertyConfig` and `PropertyResult` are dataclasses; `TransactionRecord` is a
+`TypedDict` (dict-compatible for ease of construction from scraped row data).
+`PaymentStatus` is an `Enum` whose string values are stored in `run_history.json`.
+
+---
 
 ### `config_loader.py`
 **Responsibility:** Load, merge, and validate all configuration at startup.
@@ -466,24 +573,35 @@ idempotency check).
 `run_history.json` updated.
 
 **Key behavior:**
-1. Check `run_history.json` for existing successful run this month.
+1. Check `run_history.json` for existing run this month:
+   - `completed` → exit (already done).
+   - `completed_email_failed` → retry email using stored results; skip scraping.
+   - Missing / `error` → proceed normally.
 2. Load and validate config.
-3. Run scraper.
-4. Run matcher.
-5. Run notifier.
-6. Write run record to `run_history.json` (only on success).
-7. On any unhandled exception: log error, attempt to send error notification
-   email, do NOT write success record.
+3. Run scraper (skipped on email-retry path).
+4. Run matcher (skipped on email-retry path).
+5. Run notifier. On SMTP failure: log error, write `completed_email_failed` to
+   run_history (preserving full property results for retry), return exit code 0
+   so the scheduler does not treat the check itself as failed.
+6. Write run record to `run_history.json` (`completed` on success,
+   `completed_email_failed` if SMTP failed, `error` if scraping or matching failed).
+7. On scraper or matcher exception: log error, attempt error notification email,
+   write `error` record, exit with code 1.
 
 ---
 
 ## 6. Key Data Structures
 
+All types live in `src/models.py` (see DD9). `PropertyConfig` is a dataclass
+(not a `TypedDict`) to simplify construction in tests without dict syntax.
+
 ```python
+# src/models.py
 from dataclasses import dataclass
-from typing import TypedDict
 from datetime import date
 from enum import Enum
+from typing import TypedDict
+
 
 class PaymentStatus(Enum):
     PAID_ON_TIME        = "paid_on_time"
@@ -492,10 +610,11 @@ class PaymentStatus(Enum):
     POSSIBLE_MATCH      = "possible_match"      # Step 2 result
     LLM_SUGGESTED       = "llm_suggested"       # Step 3 result
     MISSING             = "missing"
-    LLM_SKIPPED_MISSING = "llm_skipped_missing" # Step 3 unavailable
+    LLM_SKIPPED_MISSING = "llm_skipped_missing" # Step 3 unavailable (Ollama down)
 
 
 class TransactionRecord(TypedDict):
+    """Dict-compatible so scraped row data can be returned without conversion."""
     date:        date
     description: str
     amount:      float   # positive = credit (income)
@@ -503,11 +622,12 @@ class TransactionRecord(TypedDict):
     category:    str
 
 
-class PropertyConfig(TypedDict):
+@dataclass
+class PropertyConfig:
     name:                str    # e.g. "Links Lane"
     tenant_name:         str
     expected_rent:       float
-    due_day:             int    # day of month rent is due
+    due_day:             int    # day of month rent is due (1–28)
     grace_period_days:   int
     category_label:      str    # Monarch category to match in Step 1
     account:             str    # account name to scope Step 1 search
@@ -521,6 +641,10 @@ class PropertyResult:
     notes:               str             # human-readable context for email
     step_resolved_by:    int | None      # 1, 2, 3, or None if unresolved
 ```
+
+`run_history.json` stores `PropertyResult` fields in serialised form (dates as
+ISO strings, `PaymentStatus` as its string value) to support the
+`completed_email_failed` email retry path (see DD10).
 
 ---
 
@@ -545,10 +669,14 @@ template. The email is still sent. The email body includes: "LLM review and
 email generation were unavailable — showing raw results only."
 
 ### Gmail SMTP failure
-`notifier` raises after logging the error with full context (recipient,
-subject, SMTP host, error message). The orchestrator propagates this as a
-run failure. It does NOT write a success record. The operator must
-investigate the SMTP credentials or Gmail account.
+`notifier` logs the error with full context (recipient, subject, SMTP host,
+error message) and returns `False`. The orchestrator writes
+`overall_status: "completed_email_failed"` to `run_history.json`, preserving
+the full `PropertyResult` data. On the next scheduled invocation the
+orchestrator detects this status and retries email delivery from the stored
+results without re-scraping. Once delivery succeeds the record is updated to
+`completed`. The operator must investigate the SMTP credentials or Gmail app
+password if retries continue to fail. See DD10 for full rationale.
 
 ### `run_history.json` missing or malformed
 `orchestrator` treats a missing or unreadable file as "not yet run this

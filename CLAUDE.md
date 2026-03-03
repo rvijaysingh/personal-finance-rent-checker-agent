@@ -40,6 +40,11 @@ personal-finance-rent-checker-agent/
     transaction_matcher.py     # Hybrid: deterministic + LLM matching
     notifier.py                # Gmail SMTP email
     orchestrator.py            # Main entry point
+    models.py                  # Shared data structures (TransactionRecord,
+                               # PropertyConfig, PropertyResult, PaymentStatus).
+                               # Lives in its own module so scraper and matcher
+                               # can both use the same types without importing
+                               # from each other.
   tests/
     test_matcher.py
     test_config.py

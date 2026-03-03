@@ -1,0 +1,43 @@
+{
+  "matching": {
+    "deposit_account": "Chase Checking ••1230",
+    "amount_tolerance_percent": 2.0
+  },
+  "properties": [
+    {
+      "name": "Links Lane",
+      "tenant_name": "PLACEHOLDER - First Last",
+      "expected_rent": 0.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (Links Lane)",
+      "account": "Chase Checking ••1230"
+    },
+    {
+      "name": "Calmar",
+      "tenant_name": "PLACEHOLDER - First Last",
+      "expected_rent": 0.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (Calmar)",
+      "account": "Chase Checking ••1230"
+    },
+    {
+      "name": "505",
+      "tenant_name": "PLACEHOLDER - First Last",
+      "expected_rent": 0.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (505)",
+      "account": "Chase Checking ••1230"
+    }
+  ],
+  "ollama": {
+    "endpoint": "http://localhost:11434",
+    "model": "qwen3:8b"
+  },
+  "scraper": {
+    "browser_profile_path": "C:\\Users\\YOUR_USERNAME\\AppData\\Local\\playwright-rent-profile",
+    "headless": true
+  }
+}

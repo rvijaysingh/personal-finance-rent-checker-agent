@@ -2,6 +2,9 @@
 .env.json
 *.env
 
+# Machine-local business rules (use agent_config.json.example as template)
+config/agent_config.json
+
 # Playwright browser data
 browser_data/
 playwright_profiles/
