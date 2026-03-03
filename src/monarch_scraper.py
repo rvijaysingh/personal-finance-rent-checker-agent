@@ -94,12 +94,16 @@ class ScraperError(Exception):
 def scrape_transactions(
     config: "AppConfig",
     headless_override: bool | None = None,
+    login_pause: bool = False,
 ) -> list[TransactionRecord]:
     """Extract all current-month transactions from Monarch Money.
 
     Args:
         config: Validated application configuration.
         headless_override: If provided, overrides config.headless.
+        login_pause: If True, open the browser then wait for the user to
+            press Enter before navigating. Use with --no-headless to log in
+            manually on a new machine or after session expiry.
 
     Returns:
         List of TransactionRecord for the current month. May include
@@ -139,6 +143,12 @@ def scrape_transactions(
 
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            if login_pause:
+                print(
+                    "Browser open. Log in to Monarch Money manually, "
+                    "then press Enter to continue."
+                )
+                input()
             transactions = _extract_transactions(page, config)
         finally:
             context.close()
@@ -479,7 +489,11 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        txns = scrape_transactions(cfg, headless_override=(not args.no_headless))
+        txns = scrape_transactions(
+            cfg,
+            headless_override=(not args.no_headless),
+            login_pause=args.no_headless,
+        )
     except ScraperError as exc:
         print(f"Scraper error: {exc}", file=sys.stderr)
         sys.exit(1)
