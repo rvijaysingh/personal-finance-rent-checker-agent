@@ -197,7 +197,7 @@ def _extract_transactions(page: object, config: "AppConfig") -> list[Transaction
     _scroll_to_load_transactions(page)
 
     # Extract all visible transaction rows
-    transactions = _parse_all_rows(page, config.deposit_account)
+    transactions = _parse_all_rows(page)
 
     # Filter to current month
     today = date.today()
@@ -266,7 +266,7 @@ def _scroll_to_load_transactions(page: object) -> None:
         )
 
 
-def _parse_all_rows(page: object, deposit_account: str) -> list[TransactionRecord]:
+def _parse_all_rows(page: object) -> list[TransactionRecord]:
     """Locate all transaction rows on the page and parse each one."""
     from playwright.sync_api import Page
 

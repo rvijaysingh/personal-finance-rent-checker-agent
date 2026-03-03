@@ -29,6 +29,10 @@ from src.models import PaymentStatus, PropertyConfig, PropertyResult, Transactio
 
 logger = logging.getLogger(__name__)
 
+# Amount tolerance used in Steps 1 and 2. A payment within this percentage
+# of the expected rent is considered a match.
+AMOUNT_TOLERANCE_PCT = 2.0
+
 
 class OllamaUnavailableError(Exception):
     """Raised when the Ollama service cannot be reached."""
@@ -55,7 +59,6 @@ def match_properties(
         result = _match_one_property(
             prop=prop,
             transactions=transactions,
-            tolerance_pct=config.amount_tolerance_percent,
             config=config,
             check_month=today,
         )
@@ -73,20 +76,19 @@ def match_properties(
 def _match_one_property(
     prop: PropertyConfig,
     transactions: list[TransactionRecord],
-    tolerance_pct: float,
     config: "AppConfig",
     check_month: date,
 ) -> PropertyResult:
     """Run all three steps for a single property."""
     # Step 1: category label match
-    result = _step1_category_match(prop, transactions, tolerance_pct, check_month)
+    result = _step1_category_match(prop, transactions, check_month)
     if result is not None:
         return result
 
     logger.debug("%s: Step 1 found no category match; trying Step 2", prop.name)
 
     # Step 2: amount fallback
-    result = _step2_amount_match(prop, transactions, tolerance_pct, check_month)
+    result = _step2_amount_match(prop, transactions, check_month)
     if result is not None:
         return result
 
@@ -104,7 +106,6 @@ def _match_one_property(
 def _step1_category_match(
     prop: PropertyConfig,
     transactions: list[TransactionRecord],
-    tolerance_pct: float,
     check_month: date,
 ) -> PropertyResult | None:
     """Find transactions whose category exactly matches the property's label.
@@ -137,7 +138,7 @@ def _step1_category_match(
     txn = matches[0]
 
     # Evaluate amount
-    if not _amount_matches(txn["amount"], prop.expected_rent, tolerance_pct):
+    if not _amount_matches(txn["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT):
         return PropertyResult(
             property_name=prop.name,
             status=PaymentStatus.WRONG_AMOUNT,
@@ -179,7 +180,6 @@ def _step1_category_match(
 def _step2_amount_match(
     prop: PropertyConfig,
     transactions: list[TransactionRecord],
-    tolerance_pct: float,
     check_month: date,
 ) -> PropertyResult | None:
     """Find transactions whose amount matches expected rent (any category).
@@ -190,7 +190,7 @@ def _step2_amount_match(
     # property account), since miscategorised payments may be on any line.
     matches = [
         t for t in transactions
-        if _amount_matches(t["amount"], prop.expected_rent, tolerance_pct)
+        if _amount_matches(t["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT)
         and t["amount"] > 0  # income only
     ]
 

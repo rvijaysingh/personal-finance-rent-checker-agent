@@ -1,8 +1,11 @@
 """Configuration loader for the rent payment checker agent.
 
 Loads and validates all three config sources at startup:
-  1. .env.json  — secrets (Gmail credentials)
-  2. config/agent_config.json — business rules and property definitions
+  1. .env.json  — machine-local file containing secrets, machine-specific
+                  paths, and Ollama settings (shared across projects on
+                  the same machine)
+  2. config/agent_config.json — project-specific business rules:
+                  property definitions and scraper_headless flag
   3. prompts/*.md — LLM prompt templates
 
 All validation happens here. Every other module receives a fully-validated
@@ -43,17 +46,17 @@ class AppConfig:
     gmail_password: str
     gmail_recipient: str
 
-    # Matching rules — from agent_config.json
-    deposit_account: str
-    amount_tolerance_percent: float
-    properties: list[PropertyConfig]
+    # Machine-specific paths — from .env.json
+    browser_profile_path: Path
 
-    # LLM — from agent_config.json
+    # LLM settings — from .env.json
     ollama_endpoint: str
     ollama_model: str
 
-    # Scraper — from agent_config.json
-    browser_profile_path: Path
+    # Property definitions — from agent_config.json
+    properties: list[PropertyConfig]
+
+    # Scraper behaviour — from agent_config.json
     headless: bool
 
     # Derived paths (always repo-relative, not in any config file)
@@ -80,9 +83,9 @@ def load_config() -> AppConfig:
     prompts = _load_prompts()
     config = _build_and_validate(env_data, agent_data, prompts)
     logger.info(
-        "Configuration loaded: %d properties, deposit_account=%r",
+        "Configuration loaded: %d properties, ollama=%s",
         len(config.properties),
-        config.deposit_account,
+        config.ollama_endpoint,
     )
     return config
 
@@ -93,7 +96,7 @@ def load_config() -> AppConfig:
 
 
 def _load_env_json() -> dict:
-    """Load secrets from .env.json, respecting ENV_CONFIG_PATH override."""
+    """Load the machine-local .env.json, respecting ENV_CONFIG_PATH override."""
     env_path_str = os.environ.get("ENV_CONFIG_PATH")
     if env_path_str:
         env_path = Path(env_path_str)
@@ -123,7 +126,7 @@ def _load_env_json() -> dict:
 
 
 def _load_agent_config() -> dict:
-    """Load business rules from config/agent_config.json."""
+    """Load project-specific business rules from config/agent_config.json."""
     config_path = REPO_ROOT / "config" / "agent_config.json"
     logger.debug("Loading agent config from %s", config_path)
 
@@ -196,14 +199,6 @@ def _req_str(data: dict, key: str, label: str) -> str:
     return value
 
 
-def _req_dict(data: dict, key: str, label: str) -> dict:
-    """Return a required dict field."""
-    value = _req(data, key, label)
-    if not isinstance(value, dict):
-        raise ConfigError(f"missing or invalid field: {label}.{key} must be an object")
-    return value
-
-
 # ---------------------------------------------------------------------------
 # Config assembly
 # ---------------------------------------------------------------------------
@@ -215,29 +210,24 @@ def _build_and_validate(
     prompts: dict[str, str],
 ) -> AppConfig:
     """Assemble and validate AppConfig from raw dicts."""
-    # Secrets
+    # Gmail secrets — from .env.json
     gmail_sender = _req_str(env, "gmail_sender", ".env.json")
     gmail_password = _req_str(env, "gmail_password", ".env.json")
     gmail_recipient = _req_str(env, "gmail_recipient", ".env.json")
 
-    # Matching section
-    matching = _req_dict(agent, "matching", "agent_config")
-    deposit_account = _req_str(matching, "deposit_account", "agent_config.matching")
-    raw_tol = _req(matching, "amount_tolerance_percent", "agent_config.matching")
-    try:
-        amount_tolerance_percent = float(raw_tol)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise ConfigError(
-            "missing or invalid field: agent_config.matching.amount_tolerance_percent "
-            "must be a number"
-        )
-    if not (0 < amount_tolerance_percent <= 100):
-        raise ConfigError(
-            f"missing or invalid field: agent_config.matching.amount_tolerance_percent "
-            f"must be > 0 and <= 100, got {amount_tolerance_percent}"
-        )
+    # Machine-specific path — from .env.json
+    browser_profile_str = _req_str(env, "monarch_browser_profile_path", ".env.json")
 
-    # Properties
+    # Ollama settings — from .env.json
+    ollama_endpoint = _req_str(env, "ollama_endpoint", ".env.json")
+    if not ollama_endpoint.startswith("http"):
+        raise ConfigError(
+            f"missing or invalid field: .env.json.ollama_endpoint must start "
+            f"with 'http', got: {ollama_endpoint!r}"
+        )
+    ollama_model = _req_str(env, "ollama_model", ".env.json")
+
+    # Property definitions — from agent_config.json
     raw_props = _req(agent, "properties", "agent_config")
     if not isinstance(raw_props, list) or len(raw_props) == 0:
         raise ConfigError(
@@ -245,37 +235,22 @@ def _build_and_validate(
         )
     properties = [_validate_property(p, i) for i, p in enumerate(raw_props)]
 
-    # Ollama
-    ollama = _req_dict(agent, "ollama", "agent_config")
-    ollama_endpoint = _req_str(ollama, "endpoint", "agent_config.ollama")
-    if not ollama_endpoint.startswith("http"):
-        raise ConfigError(
-            f"missing or invalid field: agent_config.ollama.endpoint must start "
-            f"with 'http', got: {ollama_endpoint!r}"
-        )
-    ollama_model = _req_str(ollama, "model", "agent_config.ollama")
-
-    # Scraper
-    scraper = _req_dict(agent, "scraper", "agent_config")
-    browser_profile_str = _req_str(
-        scraper, "browser_profile_path", "agent_config.scraper"
-    )
-    headless = scraper.get("headless", True)
+    # Scraper behaviour — from agent_config.json (optional, defaults to True)
+    headless = agent.get("scraper_headless", True)
     if not isinstance(headless, bool):
         raise ConfigError(
-            "missing or invalid field: agent_config.scraper.headless must be true or false"
+            "missing or invalid field: agent_config.scraper_headless must be "
+            "true or false"
         )
 
     return AppConfig(
         gmail_sender=gmail_sender,
         gmail_password=gmail_password,
         gmail_recipient=gmail_recipient,
-        deposit_account=deposit_account,
-        amount_tolerance_percent=amount_tolerance_percent,
-        properties=properties,
+        browser_profile_path=Path(browser_profile_str),
         ollama_endpoint=ollama_endpoint,
         ollama_model=ollama_model,
-        browser_profile_path=Path(browser_profile_str),
+        properties=properties,
         headless=headless,
         log_path=REPO_ROOT / "logs" / "run_history.json",
         prompts_dir=REPO_ROOT / "prompts",
@@ -351,10 +326,8 @@ if __name__ == "__main__":
     print(f"  Gmail sender:     {cfg.gmail_sender}")
     print(f"  Gmail password:   {'***' if cfg.gmail_password else '(empty)'}")
     print(f"  Gmail recipient:  {cfg.gmail_recipient}")
-    print(f"  Deposit account:  {cfg.deposit_account}")
-    print(f"  Tolerance:        {cfg.amount_tolerance_percent}%")
-    print(f"  Ollama:           {cfg.ollama_endpoint} / {cfg.ollama_model}")
     print(f"  Browser profile:  {cfg.browser_profile_path}")
+    print(f"  Ollama:           {cfg.ollama_endpoint} / {cfg.ollama_model}")
     print(f"  Headless:         {cfg.headless}")
     print(f"  Log path:         {cfg.log_path}")
     print(f"  Properties ({len(cfg.properties)}):")

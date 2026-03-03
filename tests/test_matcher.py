@@ -154,7 +154,7 @@ def test_due_deadline_grace_wraps_to_next_month():
 def test_step1_category_match_on_time_returns_paid_on_time():
     prop = make_prop()
     txn = make_txn(txn_date=date(2026, 3, 3))
-    result = _step1_category_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
     assert result.status == PaymentStatus.PAID_ON_TIME
@@ -165,7 +165,7 @@ def test_step1_category_match_on_time_returns_paid_on_time():
 def test_step1_category_match_late_returns_paid_late():
     prop = make_prop()
     txn = make_txn(txn_date=date(2026, 3, 10))  # after grace deadline of March 6
-    result = _step1_category_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
     assert result.status == PaymentStatus.PAID_LATE
@@ -175,7 +175,7 @@ def test_step1_category_match_late_returns_paid_late():
 def test_step1_category_match_wrong_amount_returns_wrong_amount():
     prop = make_prop(rent=1500.0)
     txn = make_txn(amount=1000.0)  # far outside 2% tolerance
-    result = _step1_category_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
     assert result.status == PaymentStatus.WRONG_AMOUNT
@@ -186,7 +186,7 @@ def test_step1_category_match_wrong_amount_returns_wrong_amount():
 def test_step1_category_match_no_match_returns_none():
     prop = make_prop(category="Rental Income (Links Lane)")
     txn = make_txn(category="Food & Dining")
-    result = _step1_category_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is None
 
@@ -194,7 +194,7 @@ def test_step1_category_match_no_match_returns_none():
 def test_step1_category_match_wrong_account_returns_none():
     prop = make_prop(account="Chase Checking ••1230")
     txn = make_txn(account="Chase Savings ••9999", category="Rental Income (Links Lane)")
-    result = _step1_category_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is None
 
@@ -203,7 +203,7 @@ def test_step1_category_match_multiple_transactions_warns_in_notes():
     prop = make_prop()
     txn1 = make_txn(txn_date=date(2026, 3, 1))
     txn2 = make_txn(txn_date=date(2026, 3, 15))
-    result = _step1_category_match(prop, [txn1, txn2], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn1, txn2], check_month=CHECK_MONTH)
 
     assert result is not None
     assert "WARNING" in result.notes
@@ -213,7 +213,7 @@ def test_step1_category_match_multiple_transactions_warns_in_notes():
 def test_step1_category_match_amount_within_tolerance_returns_paid_on_time():
     prop = make_prop(rent=1500.0)
     txn = make_txn(amount=1510.0)  # ~0.67% over — within 2%
-    result = _step1_category_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
     assert result.status == PaymentStatus.PAID_ON_TIME
@@ -227,7 +227,7 @@ def test_step1_category_match_amount_within_tolerance_returns_paid_on_time():
 def test_step2_amount_match_returns_possible_match():
     prop = make_prop(rent=1500.0)
     txn = make_txn(category="Uncategorized", amount=1500.0)
-    result = _step2_amount_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
     assert result.status == PaymentStatus.POSSIBLE_MATCH
@@ -238,7 +238,7 @@ def test_step2_amount_match_returns_possible_match():
 def test_step2_amount_match_no_match_returns_none():
     prop = make_prop(rent=1500.0)
     txn = make_txn(amount=500.0)  # far from 1500
-    result = _step2_amount_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is None
 
@@ -246,7 +246,7 @@ def test_step2_amount_match_no_match_returns_none():
 def test_step2_amount_match_ignores_negative_amounts():
     prop = make_prop(rent=1500.0)
     txn = make_txn(amount=-1500.0)  # expense, not income
-    result = _step2_amount_match(prop, [txn], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is None
 
@@ -255,7 +255,7 @@ def test_step2_amount_match_multiple_results_notes_ambiguity():
     prop = make_prop(rent=1500.0)
     txn1 = make_txn(category="Transfer", amount=1500.0, description="Wire 1")
     txn2 = make_txn(category="Transfer", amount=1500.0, description="Wire 2")
-    result = _step2_amount_match(prop, [txn1, txn2], tolerance_pct=2.0, check_month=CHECK_MONTH)
+    result = _step2_amount_match(prop, [txn1, txn2], check_month=CHECK_MONTH)
 
     assert result is not None
     assert "2" in result.notes  # "2 amount-matching transactions"

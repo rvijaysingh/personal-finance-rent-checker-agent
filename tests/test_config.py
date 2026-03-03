@@ -27,6 +27,9 @@ def _make_env(tmp_path: Path, **overrides) -> Path:
         "gmail_sender": "sender@example.com",
         "gmail_password": "test-app-password",
         "gmail_recipient": "recipient@example.com",
+        "monarch_browser_profile_path": "C:\\playwright-profile",
+        "ollama_endpoint": "http://localhost:11434",
+        "ollama_model": "qwen3:8b",
         **overrides,
     }
     p = tmp_path / ".env.json"
@@ -37,10 +40,7 @@ def _make_env(tmp_path: Path, **overrides) -> Path:
 def _make_agent_config(tmp_path: Path, **overrides) -> Path:
     """Write a valid agent_config.json to tmp_path and return its path."""
     data = {
-        "matching": {
-            "deposit_account": "Chase Checking ••1230",
-            "amount_tolerance_percent": 2.0,
-        },
+        "scraper_headless": True,
         "properties": [
             {
                 "name": "Links Lane",
@@ -52,14 +52,6 @@ def _make_agent_config(tmp_path: Path, **overrides) -> Path:
                 "account": "Chase Checking ••1230",
             }
         ],
-        "ollama": {
-            "endpoint": "http://localhost:11434",
-            "model": "qwen3:8b",
-        },
-        "scraper": {
-            "browser_profile_path": "C:\\playwright-profile",
-            "headless": True,
-        },
         **overrides,
     }
     p = tmp_path / "agent_config.json"
@@ -108,12 +100,12 @@ def test_load_config_valid_returns_appconfig(config_env):
     assert isinstance(cfg, AppConfig)
     assert cfg.gmail_sender == "sender@example.com"
     assert cfg.gmail_recipient == "recipient@example.com"
-    assert cfg.deposit_account == "Chase Checking ••1230"
-    assert cfg.amount_tolerance_percent == 2.0
+    assert cfg.ollama_endpoint == "http://localhost:11434"
+    assert cfg.ollama_model == "qwen3:8b"
+    assert cfg.browser_profile_path == Path("C:\\playwright-profile")
     assert len(cfg.properties) == 1
     assert cfg.properties[0].name == "Links Lane"
     assert cfg.properties[0].expected_rent == 1500.0
-    assert cfg.ollama_model == "qwen3:8b"
     assert cfg.headless is True
     assert "rent_match" in cfg.prompts
     assert "payment_summary" in cfg.prompts
@@ -127,23 +119,22 @@ def test_load_config_env_path_override_works(tmp_path, monkeypatch):
             "gmail_sender": "custom@example.com",
             "gmail_password": "pw",
             "gmail_recipient": "recv@example.com",
+            "monarch_browser_profile_path": "C:\\profile",
+            "ollama_endpoint": "http://localhost:11434",
+            "ollama_model": "qwen3:8b",
         }),
         encoding="utf-8",
     )
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    _make_agent_config(config_dir, **{}).rename(config_dir / "agent_config.json")
-    # Rewrite since rename moved it
     agent_data = {
-        "matching": {"deposit_account": "Chase", "amount_tolerance_percent": 1.0},
+        "scraper_headless": True,
         "properties": [{
             "name": "A", "tenant_name": "T", "expected_rent": 100.0,
             "due_day": 1, "grace_period_days": 3,
             "category_label": "Cat A", "account": "Chase",
         }],
-        "ollama": {"endpoint": "http://localhost:11434", "model": "x"},
-        "scraper": {"browser_profile_path": "C:\\p", "headless": True},
     }
     (config_dir / "agent_config.json").write_text(json.dumps(agent_data))
     prompts_dir = tmp_path / "prompts"
@@ -163,7 +154,14 @@ def test_load_config_env_path_override_works(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("missing_field", ["gmail_sender", "gmail_password", "gmail_recipient"])
+@pytest.mark.parametrize("missing_field", [
+    "gmail_sender",
+    "gmail_password",
+    "gmail_recipient",
+    "monarch_browser_profile_path",
+    "ollama_endpoint",
+    "ollama_model",
+])
 def test_load_config_missing_env_field_raises(config_env, monkeypatch, missing_field):
     """Each required .env.json field raises ConfigError when missing."""
     env_path = Path(os.environ["ENV_CONFIG_PATH"])
@@ -195,6 +193,17 @@ def test_load_config_env_invalid_json_raises(tmp_path, monkeypatch):
         load_config()
 
 
+def test_load_config_invalid_ollama_endpoint_raises(config_env):
+    """An ollama_endpoint not starting with 'http' raises ConfigError."""
+    env_path = Path(os.environ["ENV_CONFIG_PATH"])
+    data = json.loads(env_path.read_text())
+    data["ollama_endpoint"] = "ftp://localhost:11434"
+    env_path.write_text(json.dumps(data))
+
+    with pytest.raises(ConfigError, match="endpoint"):
+        load_config()
+
+
 # ---------------------------------------------------------------------------
 # Missing / invalid agent_config fields
 # ---------------------------------------------------------------------------
@@ -208,27 +217,14 @@ def test_load_config_missing_agent_config_raises(config_env, monkeypatch):
         load_config()
 
 
-@pytest.mark.parametrize("missing_field", ["matching", "properties", "ollama", "scraper"])
-def test_load_config_missing_top_level_section_raises(config_env, monkeypatch, missing_field):
-    """Each top-level agent_config section raises ConfigError when missing."""
+def test_load_config_missing_properties_raises(config_env):
+    """Missing properties key in agent_config raises ConfigError."""
     path = config_env / "config" / "agent_config.json"
     data = json.loads(path.read_text())
-    del data[missing_field]
+    del data["properties"]
     path.write_text(json.dumps(data))
 
-    with pytest.raises(ConfigError, match=missing_field):
-        load_config()
-
-
-@pytest.mark.parametrize("bad_value", [0, -1, 100.1, "two"])
-def test_load_config_invalid_tolerance_raises(config_env, bad_value):
-    """amount_tolerance_percent outside (0, 100] raises ConfigError."""
-    path = config_env / "config" / "agent_config.json"
-    data = json.loads(path.read_text())
-    data["matching"]["amount_tolerance_percent"] = bad_value
-    path.write_text(json.dumps(data))
-
-    with pytest.raises(ConfigError, match="amount_tolerance_percent"):
+    with pytest.raises(ConfigError, match="properties"):
         load_config()
 
 
@@ -243,15 +239,26 @@ def test_load_config_empty_properties_raises(config_env):
         load_config()
 
 
-def test_load_config_invalid_ollama_endpoint_raises(config_env):
-    """An ollama endpoint not starting with 'http' raises ConfigError."""
+def test_load_config_invalid_scraper_headless_raises(config_env):
+    """A non-boolean scraper_headless raises ConfigError."""
     path = config_env / "config" / "agent_config.json"
     data = json.loads(path.read_text())
-    data["ollama"]["endpoint"] = "ftp://localhost:11434"
+    data["scraper_headless"] = "yes"
     path.write_text(json.dumps(data))
 
-    with pytest.raises(ConfigError, match="endpoint"):
+    with pytest.raises(ConfigError, match="scraper_headless"):
         load_config()
+
+
+def test_load_config_headless_defaults_to_true(config_env):
+    """Omitting scraper_headless defaults to True."""
+    path = config_env / "config" / "agent_config.json"
+    data = json.loads(path.read_text())
+    data.pop("scraper_headless", None)
+    path.write_text(json.dumps(data))
+
+    cfg = load_config()
+    assert cfg.headless is True
 
 
 # ---------------------------------------------------------------------------

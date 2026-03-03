@@ -19,8 +19,8 @@ handle any check types other than rent payments in the current implementation.
 [orchestrator.py]
     │
     ├── [config_loader.py]
-    │       ├── reads: config/.env.json          (secrets)
-    │       ├── reads: config/agent_config.json  (business rules)
+    │       ├── reads: config/.env.json          (secrets + machine paths + Ollama settings)
+    │       ├── reads: config/agent_config.json  (project business rules)
     │       └── reads: prompts/*.md              (LLM templates)
     │
     ├── [monarch_scraper.py]
@@ -219,18 +219,29 @@ need frequent iteration and experimentation.
 - *Single config file:* Simple but cannot be committed if it contains secrets.
 - *Environment variables only:* Works for secrets but poor for structured
   business rules (property lists, thresholds).
-- *Three-source split:* `.env.json` for secrets (gitignored), `agent_config.json`
-  for business rules (gitignored, machine-local with committed example), `prompts/`
-  for LLM templates (committed, iterated independently).
+- *Three-source split:* `.env.json` for machine-local settings (gitignored),
+  `agent_config.json` for project business rules (gitignored, machine-local with
+  committed example), `prompts/` for LLM templates (committed, iterated
+  independently).
 
 **Chosen Approach:** Three-source split loaded and validated by `config_loader`.
 
+`.env.json` is treated as a **shared machine-local file** — it contains Gmail
+secrets, the Playwright browser profile path, and Ollama endpoint/model settings.
+These are all machine-specific (not project-specific) and may be shared across
+multiple projects on the same host. `agent_config.json` contains only
+project-specific business rules: property definitions and the `scraper_headless`
+flag. `prompts/` contains LLM templates that are committed and versioned.
+
 **Tradeoffs:**
-- *Optimizes for:* Secrets never in git history; prompt templates versioned and
-  diffable; business rules (rent amounts, due dates) can be updated without
-  touching code.
+- *Optimizes for:* Secrets and machine-specific settings never in git history;
+  prompt templates versioned and diffable; business rules (rent amounts, due
+  dates) can be updated without touching code; Ollama model can be swapped via
+  a single config change in `.env.json`.
 - *Sacrifices:* A developer must manage three files rather than one. `.example`
-  files must be kept in sync with actual schema.
+  files must be kept in sync with actual schema. Splitting machine-local settings
+  between `.env.json` and `agent_config.json` requires understanding which
+  settings are machine-level vs. project-level.
 - *Revisit if:* Configuration complexity grows significantly (many check types,
   many properties) to the point where a database or structured config management
   tool is warranted.
@@ -255,7 +266,8 @@ in prompts. The system runs on a local Windows machine.
 - *No LLM at all:* Simplest, but Step 3 and prose email generation are lost.
 
 **Chosen Approach:** Local Ollama with qwen3:8b. Model name and endpoint URL
-are in `agent_config.json` so a single config change swaps the model.
+are in `.env.json` (as machine-local settings) so a single config change
+on the host swaps the model or points to a different Ollama instance.
 
 **Tradeoffs:**
 - *Optimizes for:* Financial data privacy (never leaves the machine), zero
