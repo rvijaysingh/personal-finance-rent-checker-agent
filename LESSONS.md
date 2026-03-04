@@ -78,9 +78,14 @@ seen: 🏦, 🍏, 💳, ❓, 🔁. Category names always start with an ASCII let
 strip leading non-ASCII/non-alphanumeric characters and trailing whitespace.
 `_clean_category()` handles this.
 
-**Lazy-load timing** — Monarch loads ~50 rows initially and lazy-loads more
-on scroll. 800ms between scroll attempts was insufficient; rows were not
-loaded after 2 attempts. Use 1500ms minimum between scroll attempts.
+**Lazy-load scroll strategy** — JS `scrollTo`/`scrollHeight` change detection
+alone is not sufficient. Monarch's React scroll listeners also need a native
+wheel event to trigger the API call that fetches more transactions. Use both:
+1. `el.scrollTop = el.scrollHeight` (JS direct)
+2. `page.mouse.wheel(0, 5000)` (native wheel event at viewport 60%×50%)
+3. `page.wait_for_load_state("networkidle", timeout=4000)` then fallback 2s wait
+Stop when transaction row count stops increasing for 3 consecutive attempts
+(not scrollHeight — height may not change if virtual DOM is used).
 
 **Account name formats found**: `"Chase Checking 1230"`,
 `"Total Checking (First Republic) (...1829)"`.
@@ -90,11 +95,14 @@ row → Inspect, search for `TransactionOverview__` and `TransactionsList__`
 component name prefixes in the class attributes. Update constants in
 `monarch_scraper.py` and this file.
 
-**Browser navigation with `--no-headless`** — when `login_pause=True`, the
-browser opens to a blank/cached page. Navigation to the transactions URL must
-happen explicitly **after** the `input()` prompt (in `scrape_transactions`),
-not before the browser opens. `_extract_transactions` will also call `page.goto()`
-as part of its normal startup; the double navigation is harmless in debug mode.
+**Browser navigation with `--no-headless`** — when `login_pause=True`:
+1. Navigate to the transactions URL **before** the prompt so the user can see
+   whether they need to log in (browser should not open to a blank page).
+2. Print the login prompt and call `input()`.
+3. After Enter, **re-navigate** to the transactions URL in case a login redirect
+   left the page elsewhere.
+4. Then call `_extract_transactions()` which navigates a final time — harmless
+   since the user is now authenticated.
 
 ## LLM Response Parsing
 (Add entries here as you encounter Qwen 3 response format issues)

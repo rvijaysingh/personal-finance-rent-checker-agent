@@ -144,16 +144,24 @@ def scrape_transactions(
         try:
             page = context.pages[0] if context.pages else context.new_page()
             if login_pause:
+                # Navigate first so the user can see whether they need to log in.
+                logger.info("Navigating to %s before login pause", MONARCH_TRANSACTIONS_URL)
+                try:
+                    page.goto(MONARCH_TRANSACTIONS_URL, timeout=PAGE_LOAD_TIMEOUT_MS)
+                except Exception as exc:
+                    logger.warning("Pre-pause navigation failed (%s); user can navigate manually", exc)
                 print(
-                    "Browser open. Log in to Monarch Money manually, "
-                    "then press Enter to continue."
+                    "\nBrowser is open at Monarch Money. "
+                    "If you see a login screen, log in now. "
+                    "Press Enter once you are on the Monarch app.\n"
                 )
                 input()
-                logger.info(
-                    "Login pause complete; navigating to %s",
-                    MONARCH_TRANSACTIONS_URL,
-                )
-                page.goto(MONARCH_TRANSACTIONS_URL, timeout=PAGE_LOAD_TIMEOUT_MS)
+                # Re-navigate after login in case a redirect left us on the login page.
+                logger.info("Login pause complete; re-navigating to %s", MONARCH_TRANSACTIONS_URL)
+                try:
+                    page.goto(MONARCH_TRANSACTIONS_URL, timeout=PAGE_LOAD_TIMEOUT_MS)
+                except Exception as exc:
+                    logger.warning("Post-pause re-navigation failed: %s", exc)
             transactions = _extract_transactions(page, config)
         finally:
             context.close()
@@ -281,58 +289,81 @@ def _extract_transactions(page: object, config: "AppConfig") -> list[Transaction
 
 
 def _scroll_to_load_transactions(page: object) -> None:
-    """Scroll the transaction list container to trigger infinite-scroll loading.
+    """Scroll to trigger Monarch's lazy-loading of older transactions.
 
-    Monarch's transactions scroll inside Page__ScrollHeaderContainer, not
-    document.body. Scrolling window.scrollTo has no effect.
+    Uses both JS scrollTop and page.mouse.wheel() so React's scroll event
+    listeners are triggered (JS-only scrollTo does not always fire them).
+    Waits for network idle after each scroll so Monarch's API has time to
+    return the next batch of rows. Stops when the transaction row count
+    stops increasing for MAX_SCROLL_NO_CHANGE consecutive attempts.
     """
-    from playwright.sync_api import Page
+    from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
 
     assert isinstance(page, Page)
 
-    # Verify the scroll container exists; fall back to body if not found.
-    container_found = page.query_selector(SELECTOR_SCROLL_CONTAINER) is not None
-    if not container_found:
-        logger.warning(
-            "Scroll container %r not found — falling back to document.body. "
-            "Update SELECTOR_SCROLL_CONTAINER if transactions are truncated.",
-            SELECTOR_SCROLL_CONTAINER,
-        )
-
-    js_scroll = (
-        f'() => {{'
-        f' const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
-        f' (el || document.body).scrollTo(0, (el || document.body).scrollHeight);'
-        f' }}'
+    # Log scroll container info to help diagnose future breakage.
+    container_info = page.evaluate(
+        f"""() => {{
+            const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");
+            if (!el) return "NOT FOUND";
+            const s = window.getComputedStyle(el);
+            return `found — overflowY=${{s.overflowY}} scrollHeight=${{el.scrollHeight}} clientHeight=${{el.clientHeight}}`;
+        }}"""
     )
-    js_height = (
-        f'() => {{'
-        f' const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
-        f' return (el || document.body).scrollHeight;'
-        f' }}'
-    )
+    logger.debug("Scroll container [%s]: %s", SELECTOR_SCROLL_CONTAINER, container_info)
 
-    logger.debug(
-        "Scrolling %s to load all transactions",
-        SELECTOR_SCROLL_CONTAINER if container_found else "document.body",
-    )
+    # Hover near the centre of the transactions list for mouse wheel events.
+    # Monarch's main content is to the right of the sidebar, so 60% across
+    # and 50% down is a safe landing point.
+    viewport = page.viewport_size or {"width": 1280, "height": 720}
+    hover_x = int(viewport["width"] * 0.6)
+    hover_y = int(viewport["height"] * 0.5)
+    page.mouse.move(hover_x, hover_y)
 
-    previous_height = 0
+    MAX_SCROLL_NO_CHANGE = 3  # stop after this many consecutive no-new-row attempts
+    consecutive_no_change = 0
+
     for attempt in range(MAX_SCROLL_ATTEMPTS):
         rows_before = len(page.query_selector_all(SELECTOR_TRANSACTION_ROW))
-        page.evaluate(js_scroll)
-        page.wait_for_timeout(1500)  # Monarch lazy-loads; needs ~1-2s to fetch new rows
 
-        new_height = page.evaluate(js_height)
+        # JS scroll: directly set scrollTop on the container.
+        page.evaluate(
+            f'() => {{ const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
+            f' if (el) el.scrollTop = el.scrollHeight; }}'
+        )
+        # Mouse wheel: fires the native wheel event which React's scroll
+        # listeners pick up — this is what actually triggers the lazy-load.
+        page.mouse.wheel(0, 5000)
+
+        # Wait for Monarch's API request (triggered by scroll) to complete.
+        # networkidle = no network activity for 500 ms.
+        # Fall back to a fixed wait if the page has background polling that
+        # prevents networkidle from ever settling.
+        try:
+            page.wait_for_load_state("networkidle", timeout=4000)
+        except PlaywrightTimeout:
+            page.wait_for_timeout(2000)
+
         rows_after = len(page.query_selector_all(SELECTOR_TRANSACTION_ROW))
         logger.debug(
-            "Scroll attempt %d: rows %d→%d, height %d→%d",
-            attempt + 1, rows_before, rows_after, previous_height, new_height,
+            "Scroll attempt %d: rows %d → %d",
+            attempt + 1, rows_before, rows_after,
         )
-        if new_height == previous_height:
-            logger.debug("Scroll complete after %d attempts (no new content)", attempt + 1)
-            break
-        previous_height = new_height
+
+        if rows_after > rows_before:
+            consecutive_no_change = 0
+        else:
+            consecutive_no_change += 1
+            logger.debug(
+                "No new rows (%d / %d consecutive no-change attempts)",
+                consecutive_no_change, MAX_SCROLL_NO_CHANGE,
+            )
+            if consecutive_no_change >= MAX_SCROLL_NO_CHANGE:
+                logger.debug(
+                    "Scroll complete after %d attempt(s) — row count stable at %d",
+                    attempt + 1, rows_after,
+                )
+                break
     else:
         logger.warning(
             "Reached scroll limit (%d attempts); some older transactions may be missing",
@@ -584,14 +615,19 @@ def _clean_description(text: str) -> str:
 
 
 def _clean_category(text: str) -> str:
-    """Strip leading emoji prefix and trailing whitespace from a category.
+    """Strip leading emoji prefix, trailing newlines, and sub-item lines.
 
     Monarch prepends emoji to category names, e.g. "🏦Mortgage Payment (505)".
-    Category names always begin with an ASCII letter, so strip any leading
-    characters that are not ASCII letters or digits.
+    The element may also contain trailing newlines or additional text nodes
+    after a newline (e.g. "Transfer\n\n" or "Rental Income\nSub-label").
+    Strip leading non-ASCII/non-alphanumeric chars, then take the first
+    non-empty line only.
     """
+    # Strip leading emoji / icon characters
     stripped = re.sub(r"^[^a-zA-Z0-9]+", "", text.strip())
-    return stripped.strip()
+    # Take only the first non-empty line (discard trailing newlines or sub-items)
+    lines = [line.strip() for line in stripped.split("\n") if line.strip()]
+    return lines[0] if lines else ""
 
 
 def _dump_page_state(page: object, label: str) -> None:
