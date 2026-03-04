@@ -100,37 +100,49 @@ handle any check types other than rent payments in the current implementation.
 
 ---
 
-### DD1: Data Extraction — Browser Scraping vs. Other Approaches
+### DD1: Data Extraction — API Response Interception via Playwright
 
-**Decision:** Extract Monarch Money transaction data via Playwright browser
-automation.
+**Decision:** Extract Monarch Money transaction data by intercepting the
+internal JSON/GraphQL API responses that Monarch's React app fetches,
+using a Playwright response handler registered before navigation.
 
 **Context:** Monarch Money does not provide a public API. Transaction data
-must come from somewhere — the choices are browser automation, reverse-
-engineered private API calls, or manual CSV export.
+must come from somewhere — the choices are DOM scraping, API response
+interception, replaying API calls directly, or manual CSV export.
+
+DOM scraping was attempted first and discovered to be unworkable: Monarch
+renders its transaction list using a virtualised list component that only
+keeps viewport-visible rows in the DOM. Scrolling removes earlier rows.
+It is fundamentally impossible to have all transactions in the DOM at once,
+so DOM scraping cannot capture a complete month of data.
 
 **Options Considered:**
-- *Playwright browser automation:* Automate a real browser session that
-  navigates Monarch's UI and reads the rendered transaction table.
-- *Private API reverse engineering:* Intercept and replay the GraphQL or
-  REST calls that Monarch's web app makes internally.
-- *Manual CSV export:* Monarch supports CSV export; the operator uploads
-  it on each run.
+- *DOM scraping via Playwright:* Read rendered HTML rows. **Ruled out** —
+  virtualised list means the DOM never contains all transactions simultaneously.
+- *API response interception:* Register `page.on("response", handler)` in
+  Playwright before navigating. Capture all JSON API responses (same data
+  the React app uses to render). Parse the JSON directly.
+- *Direct API replay:* Reverse-engineer Monarch's auth tokens and call the
+  API directly without a browser.
+- *Manual CSV export:* Monarch supports CSV export; operator uploads it each run.
 
-**Chosen Approach:** Playwright browser automation with a persistent profile.
+**Chosen Approach:** API response interception within Playwright, using the
+persistent browser profile for authentication.
 
 **Tradeoffs:**
-- *Optimizes for:* No legal or ToS risk from API reverse-engineering; no
-  manual operator steps per run; leverages the browser session Monarch
-  already trusts.
-- *Sacrifices:* Stability — Monarch UI changes (CSS structure, page
-  routing, element IDs) will break selectors without warning. Selector
-  maintenance is an ongoing cost.
-- *Cost/speed:* Browser startup adds 5–15 seconds per run. Acceptable for
-  a monthly background task.
-- *Revisit if:* Monarch releases a public API, an actively maintained
-  unofficial API client becomes available, or Monarch adds bot detection
-  that makes browser automation unreliable.
+- *Optimizes for:* Complete transaction data regardless of viewport; no
+  DOM selector maintenance; more resilient to UI changes since the data
+  layer (API schema) changes less frequently than CSS class names.
+- *Sacrifices:* Dependent on Monarch's internal API schema (field names,
+  JSON paths) remaining stable. A schema change requires updating
+  `_map_transaction()` and `_TRANSACTION_ARRAY_PATHS` in `monarch_scraper.py`.
+- *vs. direct API replay:* Response interception reuses the browser's
+  authenticated session, avoiding the need to manage auth tokens separately.
+- *Cost/speed:* Browser startup still adds 5–15 seconds. Acceptable for a
+  monthly background task.
+- *Revisit if:* Monarch releases a public API, adds bot detection that
+  disrupts the browser session, or the API schema changes frequently enough
+  that maintenance cost exceeds benefit.
 
 ---
 
@@ -514,21 +526,24 @@ strings and returned in a dict keyed by filename stem.
 
 ### `monarch_scraper.py`
 **Responsibility:** Open Playwright with the persistent browser profile,
-navigate to the Monarch Money Transactions page, extract all transactions
-for the current month from the configured account, and return them as a
-structured list.
+navigate to the Monarch Money Transactions page, intercept the internal
+JSON/GraphQL API responses, parse transaction data from those responses,
+and return all current-month transactions as a structured list.
 
 **Inputs:**
-- `AppConfig` (browser profile path, account name, headless flag)
+- `AppConfig` (browser profile path, headless flag)
 
 **Outputs:**
 - `List[TransactionRecord]`
 
-**Key behavior:** Applies no filtering or business logic. Raises on
-navigation failure, selector mismatch, or timeout. Supports `--no-headless`
-flag for manual debugging. Selector strategy: prefer `data-testid` and
-`aria-label` attributes over CSS class names. Document selector changes
-in `LESSONS.md`.
+**Key behavior:** Applies no filtering or business logic — returns all
+transactions for the current month. Registers `page.on("response", handler)`
+before any navigation so no API calls are missed. Reads response bodies
+outside the event handler to avoid sync/async issues. Scrolls to trigger
+paginated API calls. Raises on navigation failure, login redirect, or if
+no transaction data is found in any captured response. Supports
+`--no-headless` flag for manual debugging. Document API schema changes
+(endpoint URL, field names) in `LESSONS.md`.
 
 ---
 
@@ -662,12 +677,16 @@ ISO strings, `PaymentStatus` as its string value) to support the
 
 ## 7. Error Handling Strategy
 
-### Monarch UI unavailable / selector breaks
-The scraper raises a descriptive exception (e.g., `ScraperError: timeout
-waiting for transaction table`). The orchestrator catches it, logs the full
-traceback, attempts to send an error notification email to the operator, and
-exits with code 1. It does NOT write a success record to `run_history.json`,
-so the next invocation will attempt the run again.
+### Monarch API schema change / no transactions found
+The scraper raises `ScraperError` if no transactions are found in any captured
+API response. This can indicate that Monarch changed the API endpoint URL or
+JSON schema (field names, nesting paths). The orchestrator catches it, logs
+the full traceback, attempts to send an error notification email to the
+operator, and exits with code 1. It does NOT write a success record to
+`run_history.json`, so the next invocation will attempt the run again.
+To diagnose: run with `--no-headless`, examine DEBUG logs for captured API
+URLs and response structure, then update `_TRANSACTION_ARRAY_PATHS` and
+`_map_transaction()` in `monarch_scraper.py`.
 
 ### Ollama unavailable (Step 3 matching)
 `transaction_matcher` catches the connection error. Properties not resolved

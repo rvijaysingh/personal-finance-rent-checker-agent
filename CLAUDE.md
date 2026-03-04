@@ -221,21 +221,21 @@ app password expired).
 
 ## Monarch Scraper Notes
 - Monarch Money does not have a public API. Data extraction is via
-  Playwright browser automation.
+  Playwright browser automation with API response interception.
+- Monarch uses a virtualized list for transactions. The DOM only
+  contains rows currently visible in the viewport. DOM scraping
+  cannot capture all transactions.
+- The scraper intercepts Monarch's internal API responses (the same
+  data the React app uses to render) and extracts structured JSON.
+  This is resilient to UI changes since the data layer is independent
+  of the presentation layer.
 - Use persistent browser profiles so login state is preserved
   between runs.
 - The scraper should extract all transactions for the current month
-  from the deposit account (Chase Checking 1230). Return the full
-  set with: date, description, amount, account, category.
-- Filtering happens downstream in the matcher, not in the scraper.
-  The scraper's job is to extract raw transaction data. The matcher
-  applies Step 1 (category match) and Step 2 (amount fallback).
-  This keeps the scraper simple and reusable for other check types.
-- Monarch's HTML structure may change. Prefer data-testid attributes
-  or aria labels over CSS class selectors. When selectors break,
-  update them and document the fix in LESSONS.md.
-- Always run in headless mode for production; include a --no-headless
-  flag for debugging.
+  from the deposit account. Filtering happens downstream in the
+  matcher, not in the scraper.
+- Always run in headed mode during development; headless setting is
+  in agent_config.json.
 
 
 ## Future Scope (Do NOT Build Now)

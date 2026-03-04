@@ -1,5 +1,6 @@
 {
   "scraper_headless": true,
+  "early_payment_days": 3,
   "properties": [
     {
       "name": "Links Lane",

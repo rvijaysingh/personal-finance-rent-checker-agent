@@ -58,6 +58,7 @@ class AppConfig:
 
     # Scraper behaviour — from agent_config.json
     headless: bool
+    early_payment_days: int   # how many days before the 1st to look back
 
     # Derived paths (always repo-relative, not in any config file)
     log_path: Path
@@ -243,6 +244,14 @@ def _build_and_validate(
             "true or false"
         )
 
+    # Early payment lookback — from agent_config.json (optional, defaults to 3)
+    early_payment_days = agent.get("early_payment_days", 3)
+    if not isinstance(early_payment_days, int) or early_payment_days < 0:
+        raise ConfigError(
+            "missing or invalid field: agent_config.early_payment_days must be "
+            f"an integer >= 0, got {early_payment_days!r}"
+        )
+
     return AppConfig(
         gmail_sender=gmail_sender,
         gmail_password=gmail_password,
@@ -252,6 +261,7 @@ def _build_and_validate(
         ollama_model=ollama_model,
         properties=properties,
         headless=headless,
+        early_payment_days=early_payment_days,
         log_path=REPO_ROOT / "logs" / "run_history.json",
         prompts_dir=REPO_ROOT / "prompts",
         prompts=prompts,
@@ -329,6 +339,7 @@ if __name__ == "__main__":
     print(f"  Browser profile:  {cfg.browser_profile_path}")
     print(f"  Ollama:           {cfg.ollama_endpoint} / {cfg.ollama_model}")
     print(f"  Headless:         {cfg.headless}")
+    print(f"  Early pay days:   {cfg.early_payment_days}")
     print(f"  Log path:         {cfg.log_path}")
     print(f"  Properties ({len(cfg.properties)}):")
     for prop in cfg.properties:

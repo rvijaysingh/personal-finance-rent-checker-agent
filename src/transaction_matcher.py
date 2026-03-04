@@ -44,58 +44,75 @@ def match_properties(
 ) -> list[PropertyResult]:
     """Run the three-step matching pipeline for all configured properties.
 
+    Two-pass design:
+      Pass 1 — deterministic Steps 1 and 2 for every property. Collects the
+               object IDs of matched transactions so they cannot be reused.
+      Pass 2 — LLM Step 3 only for properties not resolved in Pass 1, using
+               only transactions that were not matched by another property.
+
     Args:
-        transactions: All transactions for the current month (raw, unfiltered).
+        transactions: Transactions for the current window (raw, unfiltered).
         config: Validated application configuration.
 
     Returns:
         One PropertyResult per property in config.properties, in order.
     """
     today = date.today()
-    results: list[PropertyResult] = []
+    results: list[PropertyResult | None] = [None] * len(config.properties)
+    # Track Python object IDs of transactions claimed by Steps 1 or 2 so
+    # they are not offered as candidates to Step 3 for other properties.
+    matched_ids: set[int] = set()
 
-    for prop in config.properties:
-        logger.info("Matching property: %s", prop.name)
-        result = _match_one_property(
-            prop=prop,
-            transactions=transactions,
-            config=config,
-            check_month=today,
-        )
-        results.append(result)
-        logger.info(
-            "  %s → %s (step %s)",
-            prop.name,
-            result.status.value,
-            result.step_resolved_by,
-        )
+    # Pass 1: deterministic matching for all properties.
+    for i, prop in enumerate(config.properties):
+        logger.info("Matching property %s (Steps 1 and 2)", prop.name)
+        result = _match_steps_1_and_2(prop, transactions, today)
+        if result is not None:
+            results[i] = result
+            if result.matched_transaction is not None:
+                matched_ids.add(id(result.matched_transaction))
+            logger.info(
+                "  %s → %s (step %s)",
+                prop.name, result.status.value, result.step_resolved_by,
+            )
 
-    return results
+    # Pass 2: LLM fallback for unresolved properties, excluding already-matched
+    # transactions so a transaction confirmed for one property is never offered
+    # as a candidate for a different property.
+    unmatched_txns = [t for t in transactions if id(t) not in matched_ids]
+    for i, prop in enumerate(config.properties):
+        if results[i] is None:
+            logger.info(
+                "Matching property %s (Step 3, %d unmatched candidates)",
+                prop.name, len(unmatched_txns),
+            )
+            results[i] = _step3_llm_match(prop, unmatched_txns, config, today)
+            logger.info(
+                "  %s → %s (step %s)",
+                prop.name, results[i].status.value, results[i].step_resolved_by,  # type: ignore[union-attr]
+            )
+
+    return [r for r in results if r is not None]
 
 
-def _match_one_property(
+def _match_steps_1_and_2(
     prop: PropertyConfig,
     transactions: list[TransactionRecord],
-    config: "AppConfig",
     check_month: date,
-) -> PropertyResult:
-    """Run all three steps for a single property."""
-    # Step 1: category label match
+) -> PropertyResult | None:
+    """Run Steps 1 and 2 for a single property; return None if neither matches."""
     result = _step1_category_match(prop, transactions, check_month)
     if result is not None:
         return result
 
     logger.debug("%s: Step 1 found no category match; trying Step 2", prop.name)
 
-    # Step 2: amount fallback
     result = _step2_amount_match(prop, transactions, check_month)
     if result is not None:
         return result
 
-    logger.debug("%s: Step 2 found no amount match; trying Step 3", prop.name)
-
-    # Step 3: LLM fallback
-    return _step3_llm_match(prop, transactions, config, check_month)
+    logger.debug("%s: Step 2 found no amount match", prop.name)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +309,11 @@ def _step3_llm_match(
     )
 
     try:
+        if not _check_ollama_reachable(config.ollama_endpoint):
+            raise OllamaUnavailableError(
+                f"Health check failed — /api/tags did not respond at "
+                f"{config.ollama_endpoint} (5 s timeout)"
+            )
         raw_response = _call_ollama(
             config.ollama_endpoint, config.ollama_model, prompt
         )
@@ -392,6 +414,17 @@ def _interpret_llm_response(
 # ---------------------------------------------------------------------------
 
 
+def _check_ollama_reachable(endpoint: str) -> bool:
+    """Return True if Ollama responds to /api/tags within 5 seconds."""
+    url = f"{endpoint.rstrip('/')}/api/tags"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except Exception:
+        return False
+
+
 def _call_ollama(endpoint: str, model: str, prompt: str) -> str:
     """Call Ollama generate API and return the response text.
 
@@ -415,7 +448,7 @@ def _call_ollama(endpoint: str, model: str, prompt: str) -> str:
     req.add_header("Content-Type", "application/json")
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data.get("response", "")
     except urllib.error.URLError as exc:
