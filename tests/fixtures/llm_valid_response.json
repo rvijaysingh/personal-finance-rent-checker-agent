@@ -1,0 +1,6 @@
+{
+  "match_found": true,
+  "transaction_indices": [0],
+  "confidence": "high",
+  "reasoning": "The Zelle payment from JANE DOE for $2,950.00 matches the expected rent for Links Lane on March 3, 2026, which is within the grace period."
+}

@@ -263,5 +263,64 @@ block in `_step3_llm_match`.
 ## LLM Response Parsing
 (Add entries here as you encounter Qwen 3 response format issues)
 
+## Test Infrastructure
+
+### Running the test suite
+
+```bash
+python -m pytest tests/ -q               # fast, no output on pass
+python -m pytest tests/ -v               # verbose, show each test name
+python -m pytest tests/test_transaction_matcher.py -v   # single file
+python -m pytest tests/ -k "m01"         # run by name fragment
+```
+
+All 148 tests run in ~11 seconds with no network calls. No Ollama, SMTP, or
+Playwright required — all external dependencies are mocked.
+
+### Test file inventory
+
+| File | IDs | What it tests |
+|---|---|---|
+| `test_transaction_matcher.py` | M-01 to M-11 | Three-step matching pipeline |
+| `test_llm_client.py` | L-01 to L-06 | `_parse_json_response`, `_step3_llm_match`, notifier fallback |
+| `test_notifier.py` | N-01 to N-04 | Subject lines, fallback body, SMTP failure |
+| `test_config_loader.py` | C-01 to C-05 | `load_config` error paths |
+| `test_run_coordinator.py` | R-01 to R-04 | `_check_already_run`, `_load_run_history`, `_write_run_record` |
+| `test_scraper_parsing.py` | S-01 to S-05 | `_parse_api_responses`, `_map_transaction`, `_parse_date` |
+
+### Key patching patterns
+
+**Step 3 (LLM) tests** — must patch BOTH functions or the health check makes
+a real network call and the LLM is silently skipped:
+```python
+@patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
+@patch("src.transaction_matcher._call_ollama")
+def test_xxx(mock_llm, mock_health):  # closest decorator = first arg
+```
+
+**Notifier email content** — `_send_smtp` produces a `MIMEMultipart("alternative")`
+message. `msg.as_string()` base64-encodes the HTML body. Assertions against the
+email body must decode the MIME message:
+```python
+from tests.conftest import decode_mime_body
+body = decode_mime_body(call_args[0][2])   # call_args[0][2] = 3rd arg to sendmail
+assert "expected string" in body.lower()
+```
+
+### Step 3 candidate requirement
+
+`_step3_llm_match` filters candidates to `t["amount"] > 0 and t["account"] == prop.account`.
+If no positive-amount transactions remain after Steps 1/2 claim their matches,
+Step 3 returns MISSING immediately WITHOUT calling `_call_ollama`. Fixtures for
+M-02-style tests must include at least one uncategorized positive-amount
+transaction so the LLM is actually invoked.
+
+### Account string format in fixtures
+
+Test fixtures and conftest.py use `"Chase Checking \u20221230"` (single bullet:
+`•1230`, U+2022). The production `agent_config.json` uses `"••1230"` (two bullets).
+This is intentional: test fixtures are self-contained and internally consistent.
+If you update the real config account format, update conftest.py to match.
+
 ## Windows-Specific Issues
 (Add entries here for path handling, Task Scheduler, etc.)

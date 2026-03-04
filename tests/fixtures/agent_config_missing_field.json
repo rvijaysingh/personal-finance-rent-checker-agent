@@ -1,0 +1,15 @@
+{
+  "scraper_headless": true,
+  "early_payment_days": 3,
+  "email_subject_prefix": "[Agent - Rent Check]",
+  "properties": [
+    {
+      "name": "Links Lane",
+      "expected_rent": 2950.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (Links Lane)",
+      "account": "Chase Checking \u20221230"
+    }
+  ]
+}

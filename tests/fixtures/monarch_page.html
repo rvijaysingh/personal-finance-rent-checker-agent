@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!--
+  PLACEHOLDER: Replace this file with a real page dump from logs/scraper_*.html
+  for higher-fidelity selector testing.
+
+  This placeholder contains the CSS class structure that the scraper relies on
+  for timing (phase 1 and phase 2 load detection). Transaction data in the real
+  page comes from JSON API responses, not the HTML DOM — see monarch_api_response.json
+  for the actual parsing fixture.
+
+  Selectors used by monarch_scraper.py:
+    Phase 1: [class*='SideBar__Root']
+    Phase 2: [class*='TransactionsList__ListContainer'] or [class*='TransactionOverview__Root']
+    Scroll:  [class*='Page__ScrollHeaderContainer']
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Monarch Money - Transactions (placeholder)</title>
+</head>
+<body>
+  <!-- Phase 1 sentinel: sidebar shell -->
+  <div class="SideBar__Root-placeholder">
+    <nav>Monarch Money Sidebar</nav>
+  </div>
+
+  <!-- Phase 2 sentinel: transaction list container -->
+  <div class="Page__ScrollHeaderContainer-placeholder">
+    <div class="TransactionsList__ListContainer-placeholder">
+      <!--
+        In the real page, this container would hold the React-virtualised list.
+        Individual transaction rows are NOT present in the DOM when off-screen.
+        Transaction data comes from intercepted API responses, not from this HTML.
+
+        Sample row structure (for reference only — DOM scraping is not used):
+        <div class="TransactionRow-placeholder">
+          <span class="TransactionRow__Date">Mar 1, 2026</span>
+          <span class="TransactionRow__Description">Zelle From JANE DOE</span>
+          <span class="TransactionRow__Amount">$2,950.00</span>
+        </div>
+      -->
+      <div class="TransactionRow-placeholder">
+        <span>Mar 1, 2026</span>
+        <span>Zelle From JANE DOE</span>
+        <span>$2,950.00</span>
+      </div>
+      <div class="TransactionRow-placeholder">
+        <span>Mar 2, 2026</span>
+        <span>Zelle From BOB SMITH</span>
+        <span>$3,100.00</span>
+      </div>
+      <div class="TransactionRow-placeholder">
+        <span>Mar 3, 2026</span>
+        <span>Zelle From ALICE JOHNSON</span>
+        <span>$2,800.00</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

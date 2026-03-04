@@ -1,0 +1,50 @@
+[
+  {
+    "run_date": "2026-03-01T10:05:32.123456",
+    "check_month": "2026-03",
+    "overall_status": "completed",
+    "email_sent": true,
+    "errors": [],
+    "property_results": [
+      {
+        "property_name": "Links Lane",
+        "status": "paid_on_time",
+        "step_resolved_by": 1,
+        "notes": "Received 2026-03-01 — on time (deadline 2026-03-06).",
+        "matched_transaction": {
+          "date": "2026-03-01",
+          "description": "Zelle From JANE DOE",
+          "amount": 2950.00,
+          "account": "Chase Checking \u20221230",
+          "category": "Rental Income (Links Lane)"
+        }
+      },
+      {
+        "property_name": "Calmar",
+        "status": "paid_on_time",
+        "step_resolved_by": 1,
+        "notes": "Received 2026-03-02 — on time (deadline 2026-03-06).",
+        "matched_transaction": {
+          "date": "2026-03-02",
+          "description": "Zelle From BOB SMITH",
+          "amount": 3100.00,
+          "account": "Chase Checking \u20221230",
+          "category": "Rental Income (Calmar)"
+        }
+      },
+      {
+        "property_name": "505",
+        "status": "paid_on_time",
+        "step_resolved_by": 1,
+        "notes": "Received 2026-03-01 — on time (deadline 2026-03-06).",
+        "matched_transaction": {
+          "date": "2026-03-01",
+          "description": "Zelle From ALICE JOHNSON",
+          "amount": 2800.00,
+          "account": "Chase Checking \u20221230",
+          "category": "Rental Income (505)"
+        }
+      }
+    ]
+  }
+]

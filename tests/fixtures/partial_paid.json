@@ -1,0 +1,30 @@
+[
+  {
+    "date": "2026-03-03",
+    "description": "Zelle From JANE DOE",
+    "amount": 2950.00,
+    "account": "Chase Checking \u20221230",
+    "category": "Rental Income (Links Lane)"
+  },
+  {
+    "date": "2026-03-04",
+    "description": "Zelle From UNKNOWN SENDER",
+    "amount": 500.00,
+    "account": "Chase Checking \u20221230",
+    "category": "Transfer"
+  },
+  {
+    "date": "2026-03-04",
+    "description": "Amazon Prime",
+    "amount": -14.99,
+    "account": "Chase Checking \u20221230",
+    "category": "Entertainment"
+  },
+  {
+    "date": "2026-03-05",
+    "description": "Grocery Store",
+    "amount": -87.43,
+    "account": "Chase Checking \u20221230",
+    "category": "Food & Dining"
+  }
+]

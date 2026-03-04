@@ -1,0 +1,34 @@
+{
+  "scraper_headless": true,
+  "early_payment_days": 3,
+  "email_subject_prefix": "[Agent - Rent Check]",
+  "properties": [
+    {
+      "name": "Links Lane",
+      "merchant_name": "JANE DOE",
+      "expected_rent": 2950.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (Links Lane)",
+      "account": "Chase Checking \u20221230"
+    },
+    {
+      "name": "Calmar",
+      "merchant_name": "BOB SMITH",
+      "expected_rent": 3100.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (Calmar)",
+      "account": "Chase Checking \u20221230"
+    },
+    {
+      "name": "505",
+      "merchant_name": "ALICE JOHNSON",
+      "expected_rent": 2800.00,
+      "due_day": 1,
+      "grace_period_days": 5,
+      "category_label": "Rental Income (505)",
+      "account": "Chase Checking \u20221230"
+    }
+  ]
+}

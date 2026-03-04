@@ -1,0 +1,32 @@
+{
+  "data": {
+    "allTransactions": {
+      "results": [
+        {
+          "id": "txn-001",
+          "date": "2026-03-01",
+          "amount": 2950.00,
+          "merchant": {"name": "Zelle From JANE DOE"},
+          "category": {"name": "Rental Income (Links Lane)"},
+          "account": {"displayName": "Chase Checking \u20221230"}
+        },
+        {
+          "id": "txn-002",
+          "date": "2026-03-02",
+          "amount": 3100.00,
+          "merchant": {"name": "Zelle From BOB SMITH"},
+          "category": {"name": "Rental Income (Calmar)"},
+          "account": {"displayName": "Chase Checking \u20221230"}
+        },
+        {
+          "id": "txn-003",
+          "date": "2026-03-03",
+          "amount": 2800.00,
+          "merchant": {"name": "Zelle From ALICE JOHNSON"},
+          "category": {"name": "Rental Income (505)"},
+          "account": {"displayName": "Chase Checking \u20221230"}
+        }
+      ]
+    }
+  }
+}

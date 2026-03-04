@@ -1,0 +1,10 @@
+[
+  {
+    "run_date": "2026-03-01T09:00:00.000000",
+    "check_month": "2026-03",
+    "overall_status": "error",
+    "email_sent": false,
+    "errors": ["Scraper failed: Connection error navigating to Monarch Money"],
+    "property_results": []
+  }
+]

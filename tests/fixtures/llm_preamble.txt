@@ -1,0 +1,5 @@
+Here is my analysis of the transactions:
+
+{"match_found": true, "transaction_indices": [0], "confidence": "high", "reasoning": "The Zelle payment matches the expected rent amount and is within the grace period."}
+
+I hope this helps!
