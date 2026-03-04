@@ -78,7 +78,7 @@ SELECTORS_ACCOUNT = [
 ]
 
 # Monarch shows ~50 rows by default. Scroll this many times to load more.
-MAX_SCROLL_ATTEMPTS = 20
+MAX_SCROLL_ATTEMPTS = 30
 # Sanity bounds — if outside these, something is wrong with extraction.
 MIN_EXPECTED_TRANSACTIONS = 1
 MAX_EXPECTED_TRANSACTIONS = 500
@@ -225,6 +225,15 @@ def _extract_transactions(page: object, config: "AppConfig") -> list[Transaction
     # Scroll to load all current-month transactions
     _scroll_to_load_transactions(page)
 
+    # Scroll back to top so the first section header appears before its rows
+    # in the DOM traversal (Monarch may place the first date header after its
+    # rows when the page is scrolled mid-list).
+    page.evaluate(
+        f'() => {{ const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
+        f' (el || document.body).scrollTo(0, 0); }}'
+    )
+    page.wait_for_timeout(300)
+
     # Extract all visible transaction rows
     transactions = _parse_all_rows(page)
 
@@ -310,10 +319,16 @@ def _scroll_to_load_transactions(page: object) -> None:
 
     previous_height = 0
     for attempt in range(MAX_SCROLL_ATTEMPTS):
+        rows_before = len(page.query_selector_all(SELECTOR_TRANSACTION_ROW))
         page.evaluate(js_scroll)
-        page.wait_for_timeout(800)  # allow React to re-render
+        page.wait_for_timeout(1500)  # Monarch lazy-loads; needs ~1-2s to fetch new rows
 
         new_height = page.evaluate(js_height)
+        rows_after = len(page.query_selector_all(SELECTOR_TRANSACTION_ROW))
+        logger.debug(
+            "Scroll attempt %d: rows %d→%d, height %d→%d",
+            attempt + 1, rows_before, rows_after, previous_height, new_height,
+        )
         if new_height == previous_height:
             logger.debug("Scroll complete after %d attempts (no new content)", attempt + 1)
             break
@@ -360,6 +375,7 @@ def _parse_all_rows(page: object) -> list[TransactionRecord]:
     logger.debug("Combined query returned %d elements total", len(all_elements))
 
     current_date: date | None = None
+    orphan_rows: list[object] = []  # rows seen before the first section header
     transactions: list[TransactionRecord] = []
     failed_rows = 0
     row_index = 0
@@ -371,15 +387,32 @@ def _parse_all_rows(page: object) -> list[TransactionRecord]:
             date_str = element.inner_text().strip()
             parsed = _parse_date(date_str)
             if parsed:
+                if current_date is None and orphan_rows:
+                    # Assign rows that appeared before any header to this date.
+                    logger.debug(
+                        "Assigning %d orphan row(s) before first header to date %s",
+                        len(orphan_rows), parsed,
+                    )
+                    for orphan in orphan_rows:
+                        try:
+                            txn = _parse_row(orphan, row_index, parsed)
+                            if txn is not None:
+                                transactions.append(txn)
+                        except Exception as exc:
+                            failed_rows += 1
+                            logger.debug("Orphan row parse failed: %s", exc)
+                        row_index += 1
+                    orphan_rows = []
                 current_date = parsed
                 logger.debug("Section header date: %s", current_date)
             else:
                 logger.debug("Could not parse section header date: %r", date_str)
             continue
 
-        # Transaction row — skip if no section header has been seen yet.
+        # Transaction row — buffer if no section header has been seen yet.
         if current_date is None:
-            logger.debug("Row skipped — no section header date seen yet")
+            logger.debug("Row buffered as orphan (no section header date seen yet)")
+            orphan_rows.append(element)
             continue
 
         try:
@@ -407,17 +440,20 @@ def _parse_row(row: object, index: int, row_date: date) -> TransactionRecord | N
     The date is supplied by the caller from the section header above this row.
     Returns None if the row does not look like a real transaction.
     """
-    description = _get_text_from_selectors(row, SELECTORS_DESCRIPTION)
+    description_raw = _get_text_from_selectors(row, SELECTORS_DESCRIPTION)
     amount_str = _get_text_from_selectors(row, SELECTORS_AMOUNT)
-    category = _get_text_from_selectors(row, SELECTORS_CATEGORY) or ""
+    category_raw = _get_text_from_selectors(row, SELECTORS_CATEGORY) or ""
     account = _get_text_from_selectors(row, SELECTORS_ACCOUNT) or ""
 
-    if not description or not amount_str:
+    if not description_raw or not amount_str:
         logger.debug(
             "Row %d skipped — missing fields: description=%r amount=%r",
-            index, description, amount_str,
+            index, description_raw, amount_str,
         )
         return None
+
+    description = _clean_description(description_raw)
+    category = _clean_category(category_raw)
 
     amount = _parse_amount(amount_str)
     if amount is None:
@@ -426,10 +462,10 @@ def _parse_row(row: object, index: int, row_date: date) -> TransactionRecord | N
 
     return TransactionRecord(
         date=row_date,
-        description=description.strip(),
+        description=description,
         amount=amount,
         account=account.strip(),
-        category=category.strip(),
+        category=category,
     )
 
 
@@ -530,6 +566,32 @@ def _parse_amount(text: str) -> float | None:
         return None
 
     return -value if is_negative else value
+
+
+def _clean_description(text: str) -> str:
+    """Remove icon characters and normalize whitespace from a description.
+
+    Monarch's TransactionMerchantSelect element contains icon glyphs from
+    Private Use Area fonts (e.g. \uf156, \uf110, \uf104) mixed with the
+    merchant name text. Strip all Unicode PUA characters (U+E000–U+F8FF),
+    then collapse the remaining newline-separated parts into a single string.
+    """
+    # Remove Unicode Private Use Area characters (icon fonts like Font Awesome)
+    cleaned = re.sub(r"[\ue000-\uf8ff]", "", text)
+    # Split on newlines, discard empty segments, rejoin
+    parts = [p.strip() for p in cleaned.split("\n") if p.strip()]
+    return " ".join(parts)
+
+
+def _clean_category(text: str) -> str:
+    """Strip leading emoji prefix and trailing whitespace from a category.
+
+    Monarch prepends emoji to category names, e.g. "🏦Mortgage Payment (505)".
+    Category names always begin with an ASCII letter, so strip any leading
+    characters that are not ASCII letters or digits.
+    """
+    stripped = re.sub(r"^[^a-zA-Z0-9]+", "", text.strip())
+    return stripped.strip()
 
 
 def _dump_page_state(page: object, label: str) -> None:

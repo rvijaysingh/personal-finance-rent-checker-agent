@@ -65,6 +65,23 @@ List wrapper: [class*="TransactionsList__ListContainer"]
 **Amount formats found**: `-1.25`, `+$2,950.00`, `$8,972.11`
 `_parse_amount` handles all of these (strips symbols, detects leading `-`).
 
+**Description field contains icon Unicode** — `TransactionMerchantSelect`
+`inner_text()` includes icon-font glyphs from the Unicode Private Use Area
+(e.g. `\uf156`, `\uf110`, `\uf104`), mixed with the merchant name and
+newlines. Raw example: `'\uf156\nPAYMENT\n\uf110\n\uf104'`. Strip all
+characters in range U+E000–U+F8FF, then split on newlines and rejoin.
+`_clean_description()` handles this.
+
+**Category text has emoji prefix and trailing newline** — category
+`inner_text()` returns e.g. `"🏦Mortgage Payment (505)\n"`. Emoji prefixes
+seen: 🏦, 🍏, 💳, ❓, 🔁. Category names always start with an ASCII letter;
+strip leading non-ASCII/non-alphanumeric characters and trailing whitespace.
+`_clean_category()` handles this.
+
+**Lazy-load timing** — Monarch loads ~50 rows initially and lazy-loads more
+on scroll. 800ms between scroll attempts was insufficient; rows were not
+loaded after 2 attempts. Use 1500ms minimum between scroll attempts.
+
 **Account name formats found**: `"Chase Checking 1230"`,
 `"Total Checking (First Republic) (...1829)"`.
 
