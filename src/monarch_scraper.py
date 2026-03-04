@@ -901,10 +901,10 @@ def _parse_date(text: str) -> date | None:
         except ValueError:
             pass
 
-    # Short formats without year — assume current year.
-    for fmt in ("%b %d", "%B %d"):
+    # Short formats without year — inject current year before parsing.
+    for year_fmt in ("%b %d %Y", "%B %d %Y"):
         try:
-            return datetime.strptime(text, fmt).replace(year=today.year).date()
+            return datetime.strptime(f"{text} {today.year}", year_fmt).date()
         except ValueError:
             pass
 
