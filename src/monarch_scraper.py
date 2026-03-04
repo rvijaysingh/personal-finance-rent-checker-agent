@@ -285,14 +285,18 @@ def _scroll_to_load_transactions(page: object) -> None:
             SELECTOR_SCROLL_CONTAINER,
         )
 
-    js_scroll = f"""
-        const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");
-        (el || document.body).scrollTo(0, (el || document.body).scrollHeight);
-    """
-    js_height = f"""
-        const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");
-        return (el || document.body).scrollHeight;
-    """
+    js_scroll = (
+        f'() => {{'
+        f' const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
+        f' (el || document.body).scrollTo(0, (el || document.body).scrollHeight);'
+        f' }}'
+    )
+    js_height = (
+        f'() => {{'
+        f' const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
+        f' return (el || document.body).scrollHeight;'
+        f' }}'
+    )
 
     logger.debug(
         "Scrolling %s to load all transactions",
