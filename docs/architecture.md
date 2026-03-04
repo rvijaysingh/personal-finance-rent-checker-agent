@@ -126,20 +126,36 @@ so DOM scraping cannot capture a complete month of data.
   API directly without a browser.
 - *Manual CSV export:* Monarch supports CSV export; operator uploads it each run.
 
-**Chosen Approach:** API response interception within Playwright, using the
-persistent browser profile for authentication.
+**Chosen Approach:** Hybrid within Playwright — API response interception for
+the initial data load, then `page.evaluate()` to replay the
+`Web_GetTransactionsList` query from inside the browser context with a higher
+limit. This collects all transactions without scrolling.
+
+**Why page.evaluate() instead of a direct Python HTTP request:** The Monarch
+GraphQL API (`https://api.monarch.com/graphql`) returns HTTP 403 when called
+from an external Python HTTP client (urllib, requests) even with a valid
+`Authorization: Token` header. Monarch validates cookie-based session fields
+and other browser-context headers that an external client cannot replicate.
+Running the fetch call inside the Playwright browser page via `page.evaluate()`
+automatically includes all cookies and session state.
+
+**Authorization header must be passed explicitly:** Even inside the browser
+context, Monarch returns HTTP 401 if the `Authorization: Token` header is
+omitted from the fetch call — cookies alone are not sufficient. The scraper
+captures this header from the intercepted outgoing `Web_GetTransactionsList`
+request (via `page.on("request", handler)`) and passes it explicitly into every
+`page.evaluate()` fetch call.
 
 **Tradeoffs:**
 - *Optimizes for:* Complete transaction data regardless of viewport; no
   DOM selector maintenance; more resilient to UI changes since the data
   layer (API schema) changes less frequently than CSS class names.
 - *Sacrifices:* Dependent on Monarch's internal API schema (field names,
-  JSON paths) remaining stable. A schema change requires updating
-  `_map_transaction()` and `_TRANSACTION_ARRAY_PATHS` in `monarch_scraper.py`.
-- *vs. direct API replay:* Response interception reuses the browser's
-  authenticated session, avoiding the need to manage auth tokens separately.
-- *Cost/speed:* Browser startup still adds 5–15 seconds. Acceptable for a
-  monthly background task.
+  JSON paths, operationName) remaining stable. A schema change requires
+  updating `_map_transaction()`, `_TRANSACTION_ARRAY_PATHS`, and possibly
+  `_fetch_transactions_direct()` in `monarch_scraper.py`.
+- *Cost/speed:* Browser startup adds 5–15 seconds. `page.evaluate()` adds
+  one extra network round-trip. Both are acceptable for a monthly task.
 - *Revisit if:* Monarch releases a public API, adds bot detection that
   disrupts the browser session, or the API schema changes frequently enough
   that maintenance cost exceeds benefit.
@@ -538,12 +554,14 @@ and return all current-month transactions as a structured list.
 
 **Key behavior:** Applies no filtering or business logic — returns all
 transactions for the current month. Registers `page.on("response", handler)`
-before any navigation so no API calls are missed. Reads response bodies
-outside the event handler to avoid sync/async issues. Scrolls to trigger
-paginated API calls. Raises on navigation failure, login redirect, or if
-no transaction data is found in any captured response. Supports
-`--no-headless` flag for manual debugging. Document API schema changes
-(endpoint URL, field names) in `LESSONS.md`.
+and `page.on("request", handler)` before any navigation so the first API
+call is captured. After the initial 25-transaction response, replays the
+`Web_GetTransactionsList` query with `limit=100` via `page.evaluate()` (which
+runs inside the browser context, so all cookies are included). Falls back to
+offset-based pagination (limit=25, offset=25/50/...) if limit=100 is rejected.
+Raises on navigation failure, login redirect, or if no transaction data is
+found. Supports `--no-headless` flag for manual debugging. Document API schema
+changes (endpoint URL, operationName, field names) in `LESSONS.md`.
 
 ---
 

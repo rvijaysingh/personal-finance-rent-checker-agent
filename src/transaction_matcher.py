@@ -44,6 +44,11 @@ def match_properties(
 ) -> list[PropertyResult]:
     """Run the three-step matching pipeline for all configured properties.
 
+    No date filtering is applied here. The scraper already narrows the list
+    to the early-payment window (e.g. Feb 26 onward for March rent). The
+    matcher searches ALL transactions it receives so that early payments
+    landing in the previous month are found by Steps 1 and 2.
+
     Two-pass design:
       Pass 1 — deterministic Steps 1 and 2 for every property. Collects the
                object IDs of matched transactions so they cannot be reused.
@@ -51,13 +56,32 @@ def match_properties(
                only transactions that were not matched by another property.
 
     Args:
-        transactions: Transactions for the current window (raw, unfiltered).
+        transactions: All transactions in the scraper's date window.
         config: Validated application configuration.
 
     Returns:
         One PropertyResult per property in config.properties, in order.
     """
     today = date.today()
+
+    # Log the date range the matcher actually received so we can confirm
+    # early-payment transactions (e.g. Feb 27) are present before matching.
+    if transactions:
+        dates = sorted({t["date"] for t in transactions})
+        logger.info(
+            "Matcher received %d transaction(s), date range %s → %s",
+            len(transactions), dates[0], dates[-1],
+        )
+        early = [t for t in transactions if t["date"].month != today.month]
+        if early:
+            logger.info(
+                "  Including %d transaction(s) from previous month: %s",
+                len(early),
+                sorted({t["date"] for t in early}),
+            )
+    else:
+        logger.warning("Matcher received zero transactions — all properties will be MISSING")
+
     results: list[PropertyResult | None] = [None] * len(config.properties)
     # Track Python object IDs of transactions claimed by Steps 1 or 2 so
     # they are not offered as candidates to Step 3 for other properties.
@@ -129,6 +153,23 @@ def _step1_category_match(
 
     Returns a PropertyResult if one or more matches found, else None.
     """
+    # Diagnostic block — visible at DEBUG level (--verbose).
+    if transactions:
+        txn_dates = sorted({t["date"] for t in transactions})
+        logger.debug(
+            "Step 1 [%s]: searching %d transaction(s), date range %s → %s  "
+            "(NO date filtering — all transactions received from scraper are searched)",
+            prop.name, len(transactions), txn_dates[0], txn_dates[-1],
+        )
+    else:
+        logger.debug("Step 1 [%s]: search set is EMPTY — no transactions to search", prop.name)
+    logger.debug("Step 1 [%s]: looking for category_label=%r  account=%r",
+                 prop.name, prop.category_label, prop.account)
+    all_cats = sorted({t["category"] for t in transactions})
+    logger.debug("Step 1 [%s]: unique categories in set: %s", prop.name, all_cats)
+    all_accts = sorted({t["account"] for t in transactions})
+    logger.debug("Step 1 [%s]: unique accounts in set: %s", prop.name, all_accts)
+
     matches = [
         t for t in transactions
         if t["category"].strip() == prop.category_label
@@ -201,14 +242,17 @@ def _step2_amount_match(
 ) -> PropertyResult | None:
     """Find transactions whose amount matches expected rent (any category).
 
+    Scoped to prop.account (same deposit account used by Step 1) so that
+    transactions from other accounts (e.g. mortgage payments going out of
+    a different account) are never mistaken for incoming rent.
+
     Returns a PropertyResult flagged for manual review, else None.
     """
-    # Step 2 searches all transactions in the deposit account (not just
-    # property account), since miscategorised payments may be on any line.
     matches = [
         t for t in transactions
         if _amount_matches(t["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT)
         and t["amount"] > 0  # income only
+        and t["account"] == prop.account
     ]
 
     if not matches:
@@ -261,9 +305,13 @@ def _step3_llm_match(
     Returns a PropertyResult with status LLM_SUGGESTED, MISSING, or
     LLM_SKIPPED_MISSING (if Ollama is unreachable).
     """
-    # Filter out transactions already likely matched to other properties
-    # and transactions that are expenses (negative amount)
-    candidates = [t for t in transactions if t["amount"] > 0]
+    # Only consider positive-amount transactions in the property's deposit
+    # account. This prevents outgoing payments from other accounts (e.g.
+    # mortgage payments) from being sent to the LLM as rent candidates.
+    candidates = [
+        t for t in transactions
+        if t["amount"] > 0 and t["account"] == prop.account
+    ]
 
     if not candidates:
         return PropertyResult(
@@ -271,10 +319,12 @@ def _step3_llm_match(
             status=PaymentStatus.MISSING,
             matched_transaction=None,
             notes=(
-                "No positive transactions found in the deposit account for "
-                "this month after Steps 1 and 2."
+                "Step 3 ran but found no deposit-account transactions to review. "
+                "All positive transactions in the deposit account were either "
+                "matched by Steps 1/2 for other properties or none were present "
+                "in the lookback window."
             ),
-            step_resolved_by=None,
+            step_resolved_by=3,
         )
 
     prompt_template = config.prompts.get("rent_match", "")
@@ -330,7 +380,7 @@ def _step3_llm_match(
                 "LLM check skipped — Ollama unreachable. "
                 "Steps 1 and 2 found no match. Manual review required."
             ),
-            step_resolved_by=None,
+            step_resolved_by=3,
         )
 
     logger.debug("Step 3 raw response for %s:\n%s", prop.name, raw_response)

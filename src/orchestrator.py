@@ -32,7 +32,10 @@ import argparse
 import json
 import logging
 import sys
+import time
 import traceback
+import urllib.error
+import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -85,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     elif args.force:
         logger.info("--force flag set; bypassing idempotency check")
+
+    # --- Step 2.5: Warm up Ollama ---
+    # Kick off model loading now, before the scraper starts, so Qwen 3 is
+    # already in GPU memory by the time Step 3 and email generation need it.
+    # Non-fatal — Steps 1 and 2 run without Ollama.
+    _warmup_ollama(config)
 
     # --- Step 3: Scrape or load transactions ---
     from src.monarch_scraper import scrape_transactions, ScraperError
@@ -208,6 +217,44 @@ def main(argv: list[str] | None = None) -> int:
         overall_status, email_sent,
     )
     return 0
+
+
+def _warmup_ollama(config: "AppConfig") -> None:
+    """Send a tiny prompt to force the Ollama model into GPU memory.
+
+    Blocks until the model responds (or fails). Called before scraping so
+    the model is already loaded when Step 3 and email generation need it.
+    Qwen 3 8B can take up to 2 minutes on a cold start — doing this now
+    means that wait happens before, not during, the matching pipeline.
+
+    Non-fatal: if Ollama is unreachable the warning is logged and the run
+    continues. Steps 1 and 2 are fully deterministic and do not need Ollama.
+    """
+    url = f"{config.ollama_endpoint.rstrip('/')}/api/generate"
+    payload = json.dumps(
+        {"model": config.ollama_model, "prompt": "Respond with OK", "stream": False}
+    ).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+
+    logger.info(
+        "Warming up Ollama model %r at %s (may take ~2 min on cold start)",
+        config.ollama_model,
+        config.ollama_endpoint,
+    )
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            resp.read()
+        logger.info("Ollama warm-up complete (%.1f s)", time.monotonic() - t0)
+    except Exception as exc:
+        logger.warning(
+            "Ollama warm-up failed after %.1f s: %s. "
+            "Steps 1 and 2 will still run; Step 3 and email generation "
+            "may be slow or unavailable.",
+            time.monotonic() - t0,
+            exc,
+        )
 
 
 def _retry_email(config: "AppConfig", today: date, *, dry_run: bool) -> int:

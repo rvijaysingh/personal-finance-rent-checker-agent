@@ -57,22 +57,14 @@ SELECTOR_TRANSACTIONS_LOADED = (
     "[class*='TransactionOverview__Root']"
 )
 
-# Used to scroll the transactions container and trigger paginated API calls.
-SELECTOR_SCROLL_CONTAINER = "[class*='Page__ScrollHeaderContainer']"
-
 PAGE_LOAD_TIMEOUT_MS = 30_000
-
-# Scroll pagination: how many scroll attempts before giving up, and how long
-# to wait after each scroll for Monarch's API to respond.
-MAX_SCROLL_ATTEMPTS = 10
-SCROLL_WAIT_MS = 3_000
-
-# Stop pagination scrolling after this many consecutive scrolls with no
-# new API responses captured.
-MAX_SCROLL_NO_NEW = 3
 
 # Sanity bound on total transactions returned.
 MAX_EXPECTED_TRANSACTIONS = 500
+
+# Direct GraphQL API endpoint — used to replay the transaction query with a
+# higher limit rather than relying on UI-triggered pagination.
+MONARCH_GRAPHQL_URL = "https://api.monarch.com/graphql"
 
 # Candidate JSON paths to the transaction array within an API response.
 # Tried in order; first path that yields a non-empty list of transaction-
@@ -160,14 +152,35 @@ def scrape_transactions(
                 pending.append(response)
                 logger.debug("Queued JSON response: %s", response.url)
 
+        # Capture outgoing GraphQL requests to api.monarch.com so we can
+        # inspect pagination variables and replay requests directly if needed.
+        # Unlike response bodies, request.post_data is safe to read inside
+        # the event handler (it is synchronous and does not block).
+        graphql_requests: list[dict[str, Any]] = []
+
+        def _on_graphql_request(request: Any) -> None:
+            """Capture GraphQL requests for query/variable discovery and replay."""
+            if "api.monarch.com/graphql" not in request.url:
+                return
+            try:
+                graphql_requests.append({
+                    "url": request.url,
+                    "body": request.post_data or "",
+                    "headers": dict(request.headers),
+                })
+                logger.debug("Captured GraphQL request (%d bytes)", len(request.post_data or ""))
+            except Exception as exc:
+                logger.debug("Could not capture GraphQL request: %s", exc)
+
         try:
             page = context.pages[0] if context.pages else context.new_page()
 
             # Register BEFORE any navigation so the first API calls are captured.
             page.on("response", _on_response)
+            page.on("request", _on_graphql_request)
 
             captured: list[dict[str, Any]] = []
-            transactions = _extract_transactions(page, config, pending, captured)
+            transactions = _extract_transactions(page, config, pending, captured, graphql_requests)
         finally:
             context.close()
 
@@ -185,6 +198,7 @@ def _extract_transactions(
     config: "AppConfig",
     pending: list[Any],
     captured: list[dict[str, Any]],
+    graphql_requests: list[dict[str, Any]],
 ) -> list[TransactionRecord]:
     """Navigate, wait for API responses, scroll for pagination, parse."""
     from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
@@ -245,8 +259,19 @@ def _extract_transactions(
         "Initial API responses captured: %d total JSON response(s)", len(captured)
     )
 
-    # Scroll to trigger any paginated API calls.
-    _scroll_for_pagination(page, pending, captured)
+    # Log the captured GraphQL request bodies for diagnostics.
+    _log_graphql_requests(graphql_requests)
+
+    today = date.today()
+    lookback_start = date(today.year, today.month, 1) - timedelta(
+        days=config.early_payment_days
+    )
+
+    # Replay Web_GetTransactionsList from inside the browser context via
+    # page.evaluate(), with limit=100.  Falls back to offset-based pagination
+    # if the server rejects the non-standard limit.
+    # _parse_api_responses deduplicates against the initial 25 by transaction ID.
+    _fetch_transactions_direct(page, graphql_requests, captured, lookback_start)
 
     # Log all captured API URLs for discovery / post-mortem debugging.
     logger.info("Total JSON responses captured: %d", len(captured))
@@ -256,6 +281,25 @@ def _extract_transactions(
     # Parse all captured responses.
     transactions = _parse_api_responses(captured)
 
+    # DEBUG: log every unique transaction date so we can see how far back
+    # the captured data goes. If the oldest date is after lookback_start
+    # we know pagination did not reach the Feb 27 payment.
+    if transactions:
+        all_dates = sorted({t["date"] for t in transactions})
+        logger.info(
+            "Date range captured: %s → %s  (%d unique dates, %d total transactions)",
+            all_dates[0], all_dates[-1], len(all_dates), len(transactions),
+        )
+        for d in all_dates:
+            count = sum(1 for t in transactions if t["date"] == d)
+            logger.debug("  %s: %d transaction(s)", d, count)
+        if all_dates[0] > lookback_start:
+            logger.warning(
+                "OLDEST captured transaction (%s) is newer than lookback_start (%s). "
+                "The Feb 27 payment was NOT captured — pagination did not reach it.",
+                all_dates[0], lookback_start,
+            )
+
     if not transactions:
         _dump_page_state(page, "no-transactions")
         raise ScraperError(
@@ -264,13 +308,7 @@ def _extract_transactions(
             "The API endpoint or JSON schema may have changed — update LESSONS.md."
         )
 
-    # Filter to the current month plus the early-payment lookback window.
-    # A tenant may pay 1–N days before the 1st, so that transaction lands in
-    # the previous month but should still be matched against this month's rent.
-    today = date.today()
-    lookback_start = date(today.year, today.month, 1) - timedelta(
-        days=config.early_payment_days
-    )
+    # Filter to the lookback window (computed above before scrolling).
     in_window = [t for t in transactions if t["date"] >= lookback_start]
 
     logger.info(
@@ -296,6 +334,21 @@ def _extract_transactions(
             "Check _find_transaction_list() paths."
         )
 
+    # Full transaction dump — visible at DEBUG level (--verbose).
+    # One line per transaction so the exact captured set can be verified.
+    logger.debug("Full transaction list returned to caller (%d):", len(in_window))
+    for t in in_window:
+        sign = "+" if t["amount"] >= 0 else ""
+        logger.debug(
+            "  %s  %s$%.2f  cat=%r  acct=%r  desc=%r",
+            t["date"],
+            sign,
+            abs(t["amount"]),
+            t["category"],
+            t["account"],
+            t["description"],
+        )
+
     return in_window
 
 
@@ -317,59 +370,306 @@ def _flush_pending(
             logger.debug("Could not read body for %s: %s", resp.url, exc)
 
 
-def _scroll_for_pagination(
+def _eval_graphql(
     page: Any,
-    pending: list[Any],
-    captured: list[dict[str, Any]],
-) -> None:
-    """Scroll to the bottom of the transactions list to trigger paginated API calls.
+    graphql_body: dict[str, Any],
+    auth_header: str,
+) -> dict[str, Any] | None:
+    """Run a GraphQL request inside the browser context via page.evaluate().
 
-    Monarch may only include the first N transactions in the initial response
-    and load more as the user scrolls. Each scroll triggers a new API request.
-    Stops when no new JSON responses arrive after MAX_SCROLL_NO_NEW scrolls.
+    The Authorization header must be passed explicitly — omitting it causes
+    HTTP 401 even though the fetch runs inside the browser with valid session
+    cookies. Monarch authenticates GraphQL requests via the Authorization
+    header, not cookies alone.
+
+    Returns {'status': <int>, 'data': <dict>} on any HTTP response (check
+    status == 200 for success), {'error': <str>} on network/JS exception,
+    or None if page.evaluate() itself raised.
     """
-    from playwright.sync_api import Page
+    js = """async ({body, authHeader}) => {
+    try {
+        const resp = await fetch('https://api.monarch.com/graphql', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': authHeader
+            },
+            body: JSON.stringify(body)
+        });
+        return {status: resp.status, data: await resp.json()};
+    } catch (e) {
+        return {error: String(e)};
+    }
+}"""
+    try:
+        return page.evaluate(js, {"body": graphql_body, "authHeader": auth_header})  # type: ignore[return-value]
+    except Exception as exc:
+        logger.warning("page.evaluate GraphQL call raised: %s", exc)
+        return None
 
-    assert isinstance(page, Page)
 
-    js_scroll = (
-        f'() => {{ const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");'
-        f' if (el) {{ el.scrollTop = el.scrollHeight; }}'
-        f' else {{ window.scrollTo(0, document.body.scrollHeight); }} }}'
+def _fetch_with_offset_pagination(
+    page: Any,
+    op_name: str,
+    query_text: str,
+    auth_header: str,
+    captured: list[dict[str, Any]],
+    lookback_start: date,
+) -> bool:
+    """Fetch additional transaction pages via offset pagination using page.evaluate().
+
+    Starts at offset=25 (the initial 25 are already in `captured`) and
+    increments by 25 per page. Stops when:
+      - A response contains a transaction dated <= lookback_start, or
+      - A response returns no transactions (end of data), or
+      - The 10-page safety limit is hit.
+
+    Returns True if at least one page was successfully appended to `captured`.
+    """
+    LIMIT = 25
+    MAX_PAGES = 10
+    cutoff_str = lookback_start.isoformat()
+    any_added = False
+
+    for page_num in range(1, MAX_PAGES + 1):
+        offset = page_num * LIMIT
+        graphql_body = {
+            "operationName": op_name,
+            "variables": {
+                "orderBy": "date",
+                "limit": LIMIT,
+                "offset": offset,
+                "filters": {"transactionVisibility": "non_hidden_transactions_only"},
+            },
+            "query": query_text,
+        }
+
+        logger.info("Offset pagination page %d (offset=%d)", page_num, offset)
+        result = _eval_graphql(page, graphql_body, auth_header)
+
+        if result is None or "error" in result:
+            err = (result or {}).get("error", "None response")
+            logger.warning(
+                "  Page %d failed: %s — stopping pagination", page_num, err
+            )
+            return any_added
+
+        status = result.get("status", 0)
+        data = result.get("data", {})
+        logger.info("  Page %d: HTTP %d", page_num, status)
+        if status != 200:
+            logger.warning(
+                "  Page %d: HTTP %d — stopping pagination", page_num, status
+            )
+            return any_added
+
+        url = f"{MONARCH_GRAPHQL_URL}?offset={offset}"
+        captured.append({"url": url, "body": json.dumps(data)})
+        any_added = True
+
+        raw_txns = _find_transaction_list(data, url) or []
+        dates = sorted(
+            t.get("date", "") for t in raw_txns
+            if isinstance(t, dict) and t.get("date")
+        )
+        oldest = dates[0] if dates else None
+        covered = oldest is not None and oldest <= cutoff_str
+
+        logger.info(
+            "  → %d transaction candidate(s), oldest date: %s, covered: %s",
+            len(raw_txns), oldest, covered,
+        )
+
+        if not raw_txns:
+            logger.info("  No transactions on page %d — end of data", page_num)
+            return any_added
+
+        if covered:
+            logger.info(
+                "  Oldest date %s <= lookback_start %s — pagination complete",
+                oldest, lookback_start,
+            )
+            return any_added
+
+    logger.warning(
+        "Offset pagination reached safety limit (%d pages) without covering %s",
+        MAX_PAGES, lookback_start,
+    )
+    return any_added
+
+
+def _fetch_transactions_direct(
+    page: Any,
+    graphql_requests: list[dict[str, Any]],
+    captured: list[dict[str, Any]],
+    lookback_start: date,
+) -> bool:
+    """Fetch all transactions by replaying the GraphQL query from the browser context.
+
+    Uses page.evaluate() so all cookies and session state are included
+    automatically. External HTTP clients return HTTP 403.
+
+    The Authorization header is extracted from the captured request and passed
+    explicitly into every page.evaluate() call — Monarch requires it even in
+    browser context; cookies alone cause HTTP 401.
+
+    Strategy:
+      1. Find the captured Web_GetTransactionsList request by exact operationName.
+      2. Extract the Authorization header from that request.
+      3. Replay with limit=100 to get all recent transactions in one call.
+      4. If limit=100 fails, fall back to offset-based pagination (limit=25,
+         offset=25 / 50 / 75 / ...) until lookback_start is covered.
+
+    Returns True if at least one additional response was appended to `captured`.
+    """
+    # Find Web_GetTransactionsList by exact operationName — not a fuzzy match.
+    source_req: dict[str, Any] | None = None
+    source_body: dict[str, Any] | None = None
+    for req in graphql_requests:
+        body_str = req.get("body") or ""
+        if not body_str:
+            continue
+        try:
+            body = json.loads(body_str)
+        except json.JSONDecodeError:
+            continue
+        if body.get("operationName") == "Web_GetTransactionsList":
+            source_req = req
+            source_body = body
+            break
+
+    if source_body is None:
+        all_ops = []
+        for r in graphql_requests:
+            try:
+                all_ops.append(json.loads(r.get("body") or "{}").get("operationName"))
+            except json.JSONDecodeError:
+                pass
+        logger.warning(
+            "Direct fetch: Web_GetTransactionsList not found in %d captured "
+            "GraphQL request(s). Captured operationNames: %s",
+            len(graphql_requests), all_ops,
+        )
+        return False
+
+    # Extract the Authorization header (case-insensitive) from the source request.
+    headers = (source_req or {}).get("headers", {})
+    auth_header = next(
+        (v for k, v in headers.items() if k.lower() == "authorization"),
+        "",
+    )
+    if not auth_header:
+        logger.warning(
+            "Direct fetch: Authorization header not found in captured request headers. "
+            "Available header keys: %s. Proceeding without auth — may get HTTP 401.",
+            list(headers.keys()),
+        )
+    else:
+        logger.debug("Direct fetch: Authorization header captured (%d chars)", len(auth_header))
+
+    op_name = source_body["operationName"]
+    query_text = source_body.get("query", "")
+
+    # Attempt 1: single request with limit=100.
+    graphql_body_100 = {
+        "operationName": op_name,
+        "variables": {
+            "orderBy": "date",
+            "limit": 100,
+            "filters": {"transactionVisibility": "non_hidden_transactions_only"},
+        },
+        "query": query_text,
+    }
+
+    logger.info("Direct GraphQL fetch via page.evaluate: op=%r limit=100", op_name)
+    result = _eval_graphql(page, graphql_body_100, auth_header)
+
+    if result is not None and "error" not in result:
+        status = result.get("status", 0)
+        data = result.get("data", {})
+        logger.info("Direct fetch (limit=100): HTTP %d", status)
+        if status == 200:
+            raw_txns = _find_transaction_list(data, MONARCH_GRAPHQL_URL) or []
+            dates = sorted(
+                t.get("date", "") for t in raw_txns
+                if isinstance(t, dict) and t.get("date")
+            )
+            logger.info(
+                "Direct fetch (limit=100) succeeded: %d transaction candidate(s), "
+                "date range: %s → %s",
+                len(raw_txns),
+                dates[0] if dates else "n/a",
+                dates[-1] if dates else "n/a",
+            )
+            captured.append({"url": MONARCH_GRAPHQL_URL + "?limit=100", "body": json.dumps(data)})
+            return True
+        logger.warning(
+            "Direct fetch limit=100 returned HTTP %d — falling back to offset pagination",
+            status,
+        )
+    else:
+        err = (result or {}).get("error", "None response")
+        logger.warning(
+            "Direct fetch limit=100 failed (%s) — falling back to offset pagination",
+            err,
+        )
+
+    # Attempt 2: offset-based pagination starting at offset=25.
+    return _fetch_with_offset_pagination(
+        page, op_name, query_text, auth_header, captured, lookback_start
     )
 
-    no_new_count = 0
 
-    for attempt in range(MAX_SCROLL_ATTEMPTS):
-        count_before = len(captured) + len(pending)
-        page.evaluate(js_scroll)
-        page.wait_for_timeout(SCROLL_WAIT_MS)
+# ---------------------------------------------------------------------------
+# GraphQL request discovery
+# ---------------------------------------------------------------------------
 
-        # Flush any responses that arrived during the wait.
-        _flush_pending(pending, captured)
-        count_after = len(captured)
 
-        new_count = count_after - (count_before - len(pending))
-        logger.debug(
-            "Pagination scroll %d/%d: %d new API response(s) (total: %d)",
-            attempt + 1, MAX_SCROLL_ATTEMPTS, new_count, count_after,
-        )
+def _log_graphql_requests(graphql_requests: list[dict[str, Any]]) -> None:
+    """Log captured GraphQL request bodies for pagination variable discovery.
 
-        if new_count > 0:
-            no_new_count = 0
-        else:
-            no_new_count += 1
-            if no_new_count >= MAX_SCROLL_NO_NEW:
-                logger.debug(
-                    "No new API responses after %d consecutive scrolls — done",
-                    MAX_SCROLL_NO_NEW,
-                )
-                break
-    else:
-        logger.warning(
-            "Reached scroll limit (%d); some older transactions may be missing",
-            MAX_SCROLL_ATTEMPTS,
-        )
+    Prints the operationName, variables, and auth header names for every
+    request whose body mentions 'allTransactions'. Call this after the
+    initial page-load flush so the first-page query is visible in logs.
+
+    Auth header *values* are logged only at DEBUG level to avoid writing
+    credentials to INFO logs in production.
+    """
+    all_txn_reqs = [
+        r for r in graphql_requests
+        if "allTransactions" in (r.get("body") or "")
+    ]
+
+    logger.info(
+        "GraphQL requests captured: %d total, %d mention allTransactions",
+        len(graphql_requests), len(all_txn_reqs),
+    )
+
+    for i, req in enumerate(all_txn_reqs, start=1):
+        logger.info("=== allTransactions GraphQL request #%d ===", i)
+        body_str = req.get("body") or ""
+        try:
+            body = json.loads(body_str)
+        except json.JSONDecodeError:
+            logger.info("  (body is not valid JSON — raw: %s)", body_str[:500])
+            continue
+
+        logger.info("  operationName : %s", body.get("operationName", "(none)"))
+        variables = body.get("variables", {})
+        logger.info("  variables     : %s", json.dumps(variables, indent=4))
+
+        # Log auth header names at INFO; values only at DEBUG.
+        headers = req.get("headers", {})
+        auth_keys = [k for k in headers if k.lower() in (
+            "authorization", "cookie", "x-api-key", "x-monarch-token",
+        )]
+        logger.info("  auth headers present: %s", auth_keys or "(none found)")
+        for k in auth_keys:
+            logger.debug("  %s: %s", k, headers[k])
+
+        # Log the query string at DEBUG only — it can be very long.
+        query = body.get("query", "")
+        logger.debug("  query:\n%s", query)
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +710,18 @@ def _parse_api_responses(
             url, list(data.keys()),
         )
 
+        # Log GraphQL operation names (the keys under "data" in a GraphQL
+        # response correspond to the query's operation name). Also log
+        # "operationName" if Monarch echoes it back in the response.
+        op_name = data.get("operationName")
+        data_node = data.get("data")
+        if isinstance(data_node, dict):
+            logger.debug(
+                "  GraphQL data keys (operation names): %s%s",
+                list(data_node.keys()),
+                f"  operationName={op_name!r}" if op_name else "",
+            )
+
         raw_txns = _find_transaction_list(data, url)
         if not raw_txns:
             continue
@@ -433,12 +745,21 @@ def _parse_api_responses(
                 continue
             txn_id = str(raw.get("id", ""))
             if txn_id and txn_id in seen_ids:
-                continue
-            if txn_id:
-                seen_ids.add(txn_id)
+                continue  # fast path: skip before mapping
             mapped = _map_transaction(raw)
-            if mapped is not None:
-                all_transactions.append(mapped)
+            if mapped is None:
+                continue
+            # Use ID as dedup key when available; fall back to a composite
+            # key so transactions without IDs are not double-counted across
+            # paginated responses.
+            if txn_id:
+                key = txn_id
+            else:
+                key = f"{mapped['date']}|{mapped['amount']}|{mapped['description']}"
+                if key in seen_ids:
+                    continue
+            seen_ids.add(key)
+            all_transactions.append(mapped)
 
     logger.info(
         "Parsed %d unique transaction(s) from %d captured response(s)",

@@ -60,6 +60,9 @@ class AppConfig:
     headless: bool
     early_payment_days: int   # how many days before the 1st to look back
 
+    # Email settings — from agent_config.json
+    email_subject_prefix: str
+
     # Derived paths (always repo-relative, not in any config file)
     log_path: Path
     prompts_dir: Path
@@ -252,6 +255,14 @@ def _build_and_validate(
             f"an integer >= 0, got {early_payment_days!r}"
         )
 
+    # Email subject prefix — from agent_config.json (optional)
+    email_subject_prefix = agent.get("email_subject_prefix", "[Agent - Rent Check]")
+    if not isinstance(email_subject_prefix, str) or not email_subject_prefix.strip():
+        raise ConfigError(
+            "missing or invalid field: agent_config.email_subject_prefix must be "
+            f"a non-empty string, got {email_subject_prefix!r}"
+        )
+
     return AppConfig(
         gmail_sender=gmail_sender,
         gmail_password=gmail_password,
@@ -262,6 +273,7 @@ def _build_and_validate(
         properties=properties,
         headless=headless,
         early_payment_days=early_payment_days,
+        email_subject_prefix=email_subject_prefix,
         log_path=REPO_ROOT / "logs" / "run_history.json",
         prompts_dir=REPO_ROOT / "prompts",
         prompts=prompts,
@@ -340,6 +352,7 @@ if __name__ == "__main__":
     print(f"  Ollama:           {cfg.ollama_endpoint} / {cfg.ollama_model}")
     print(f"  Headless:         {cfg.headless}")
     print(f"  Early pay days:   {cfg.early_payment_days}")
+    print(f"  Email prefix:     {cfg.email_subject_prefix}")
     print(f"  Log path:         {cfg.log_path}")
     print(f"  Properties ({len(cfg.properties)}):")
     for prop in cfg.properties:

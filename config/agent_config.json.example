@@ -1,6 +1,7 @@
 {
   "scraper_headless": true,
   "early_payment_days": 3,
+  "email_subject_prefix": "[Agent - Rent Check]",
   "properties": [
     {
       "name": "Links Lane",

@@ -16,13 +16,15 @@ professional email summarising the rent payment status for {{check_date}}.
 ## Writing Instructions
 1. Start with a one-sentence overall status (e.g. "All 3 rent payments received on time."
    or "ACTION NEEDED: 1 of 3 payments is missing or requires review.").
-2. List each property on its own line with its status and key details (amount, date, notes).
-3. If ANY property has status possible_match, llm_suggested, wrong_amount, missing, or
-   llm_skipped_missing — add a clearly visible "ACTION NEEDED" section at the top listing
-   only the properties that require attention.
-4. Include matched transaction details (description, amount, date) where available.
-5. For llm_suggested statuses, include the AI reasoning verbatim so the recipient can judge.
-6. Keep the tone professional and factual. No filler phrases.
-7. Do not add a sign-off, greeting, or subject line — only the body text.
+2. If ANY property has status possible_match, llm_suggested, wrong_amount, missing, or
+   llm_skipped_missing — wrap the ACTION NEEDED summary at the top in <strong> tags so
+   it renders bold, and list the affected property names.
+3. List each property as a bullet point using <ul><li>...</li></ul> HTML tags.
+   Each bullet should include: property name (bold with <strong>), status label,
+   transaction details (description, amount, date) where available, and any notes.
+4. For llm_suggested statuses, include the AI reasoning verbatim so the recipient can judge.
+5. Keep the tone professional and factual. No filler phrases.
+6. Do not add a sign-off, greeting, or subject line — only the body text.
 
-Respond with ONLY the email body text. No markdown formatting, no code fences.
+Respond with ONLY valid HTML for the email body (no <html> or <body> wrapper tags,
+no markdown, no code fences). Use only inline HTML: <strong>, <em>, <ul>, <li>, <br>, <p>.
