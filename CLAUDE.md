@@ -61,10 +61,11 @@ Three config sources:
 1. .env.json (gitignored, machine-local): secrets only.
    Path resolved from ENV_CONFIG_PATH environment variable,
    falling back to ../config/.env.json relative to repo root.
-2. config/agent_config.json (gitignored, machine-local): business rules,
-   property definitions, thresholds. config/agent_config.json.example
-   is committed as a template showing the required schema with
-   placeholder values.
+2. config/agent_config.json (gitignored, machine-local): business
+   rules, property definitions, thresholds (including
+   early_payment_days for pre-due-date payment lookback),
+   scraper_headless. config/agent_config.json.example is committed
+   as a template showing the required schema with placeholder values.
 3. prompts/ directory (committed): LLM prompt templates
    loaded at runtime with variable substitution.
 4. logs/run_history.json (gitignored, machine-local): run history
@@ -80,6 +81,12 @@ Three config sources:
 2. If not yet run this month, proceed with the payment check.
 
 ### Payment Matching (Three Steps)
+- A tenant may pay rent up to early_payment_days (default 3) before
+  the due date, landing the payment in the previous month. The
+  scraper pulls transactions from the last early_payment_days of
+  the previous month through the current month. All three steps
+  search this full window.
+  
 Step 1 - Category Match:
 - Navigate to Monarch's Transactions page.
 - For each property, search this month's transactions for an exact
