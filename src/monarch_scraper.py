@@ -149,6 +149,11 @@ def scrape_transactions(
                     "then press Enter to continue."
                 )
                 input()
+                logger.info(
+                    "Login pause complete; navigating to %s",
+                    MONARCH_TRANSACTIONS_URL,
+                )
+                page.goto(MONARCH_TRANSACTIONS_URL, timeout=PAGE_LOAD_TIMEOUT_MS)
             transactions = _extract_transactions(page, config)
         finally:
             context.close()
@@ -445,13 +450,19 @@ def _get_text_from_selectors(element: object, selectors: list[str]) -> str | Non
 def _parse_date(text: str) -> date | None:
     """Parse Monarch's date display into a date object.
 
+    Section headers include a daily total on the second line, e.g.:
+      "March 2, 2026\n$8,972.11"
+    Only the first line is the date. Split on newline before parsing.
+
     Handles formats:
-      - "Mar 3"          (current year implied)
+      - "March 2, 2026"  (full month name with year — primary Monarch format)
       - "Mar 3, 2026"
+      - "Mar 3"          (current year implied)
+      - "March 3"        (current year implied)
       - "2026-03-03"     (ISO)
       - "03/03/2026"     (US)
     """
-    text = text.strip()
+    text = text.strip().split("\n")[0].strip()
     today = date.today()
 
     # ISO format

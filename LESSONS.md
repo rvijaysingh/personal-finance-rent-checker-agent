@@ -36,9 +36,18 @@ const el = document.querySelector("[class*='Page__ScrollHeaderContainer']");
 **Date headers** — dates are NOT inside transaction rows. Monarch groups rows
 under section header siblings:
 ```
-[class*="TransactionsList__StyledSectionHeader"]  →  text: "Mar 3, 2026"
+[class*="TransactionsList__StyledSectionHeader"]
 ```
-Date format found in HTML: `"Mar 3, 2026"` (matches `%b %d, %Y`).
+The header's `inner_text()` includes a daily total on the second line:
+```
+"March 2, 2026\n$8,972.11"
+```
+Split on `\n` and parse the **first line only**. Date format is
+`"March 2, 2026"` — full month name with year, matching `strptime("%B %d, %Y")`.
+Failing to split causes `_parse_date` to return `None` for every header,
+`current_date` stays `None`, all rows are skipped, and 0 transactions
+are returned (triggering the `no-transactions` failure dump).
+
 Process headers and rows together in document order; propagate `current_date`
 from each header to subsequent rows until the next header.
 
@@ -63,6 +72,12 @@ List wrapper: [class*="TransactionsList__ListContainer"]
 row → Inspect, search for `TransactionOverview__` and `TransactionsList__`
 component name prefixes in the class attributes. Update constants in
 `monarch_scraper.py` and this file.
+
+**Browser navigation with `--no-headless`** — when `login_pause=True`, the
+browser opens to a blank/cached page. Navigation to the transactions URL must
+happen explicitly **after** the `input()` prompt (in `scrape_transactions`),
+not before the browser opens. `_extract_transactions` will also call `page.goto()`
+as part of its normal startup; the double navigation is harmless in debug mode.
 
 ## LLM Response Parsing
 (Add entries here as you encounter Qwen 3 response format issues)
