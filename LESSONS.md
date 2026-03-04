@@ -6,46 +6,63 @@ these known pitfalls.
 
 ## Monarch Scraper
 
-### Working selectors — verified 2026-03-03
+### Working selectors and structure — verified 2026-03-03
 
-Monarch uses styled-components. Class names have hash suffixes that may change
-between deployments (e.g. `SideBar__Root-sc-abc123 ejKmNp`), so all selectors
-use `[class*="ComponentName"]` partial matches.
-
-**Page load detection** (wait for one of these before extracting):
+**Base URL** — Monarch redirects to `app.monarch.com`, not `app.monarchmoney.com`:
 ```
-[class*="SideBar__Root"]
-[class*="TransactionsList__ListContainer"]
-```
-There is NO `<nav>`, `<main>`, `role='navigation'`, or `data-testid='sidebar'`.
-The original guess selectors all fail.
-
-**Date / section header** — dates are NOT inside transaction rows. Monarch groups
-rows under date section headers that are siblings of the rows:
-```
-[class*="TransactionsList__StyledSectionHeader"]  →  text: "March 3"
-```
-Processing order: scan all `SELECTOR_SECTION_HEADER, SELECTOR_TRANSACTION_ROW`
-together in document order. Update `current_date` on each header; assign it to
-all rows that follow until the next header.
-
-**Transaction row** (one per transaction):
-```
-[class*="TransactionOverview__Root"]
+https://app.monarch.com/transactions
 ```
 
-**Fields within a transaction row**:
-```
-Description / merchant:  [class*="TransactionMerchantSelect"]
-Amount:                  [class*="TransactionOverview__Amount"]
-Category:                [class*="TransactionOverview__Category"]
-Account name:            [class*="TransactionAccount__Name"]
-Account container:       [class*="TransactionAccount__Root"]
+**Styled-components pattern** — no `data-testid` attributes anywhere. Class names
+carry a hash suffix that changes per Monarch build (e.g.
+`TransactionOverview__Root-sc-6s1ps1-1 abcXYZ`). Always use `[class*="Name"]`
+partial matching.
+
+**Two-phase page load** — the page renders in two stages:
+1. Sidebar appears first (`SideBar__Root`) — app shell is ready.
+2. Transactions fetch from the API and replace a loading skeleton
+   (`TransactionsListLoading__Root`). Must wait for `TransactionsList__ListContainer`
+   or `TransactionOverview__Root` before attempting extraction. Extracting
+   after phase 1 only yields 0 rows (skeleton, not real data).
+
+**Scroll container** — transactions scroll inside `Page__ScrollHeaderContainer`
+(which has `overflow-y: scroll`), NOT `document.body`. Using `window.scrollTo`
+or `document.body.scrollHeight` has no effect. Use JS to target the container:
+```js
+const el = document.querySelector("[class*='Page__ScrollHeaderContainer']");
+(el || document.body).scrollTo(0, (el || document.body).scrollHeight);
 ```
 
-**If selectors break again**: open the browser with `--no-headless`, right-click
-a transaction row → Inspect, and look for the `TransactionOverview__` and
-`TransactionsList__` component name prefixes in the class attributes.
+**Date headers** — dates are NOT inside transaction rows. Monarch groups rows
+under section header siblings:
+```
+[class*="TransactionsList__StyledSectionHeader"]  →  text: "Mar 3, 2026"
+```
+Date format found in HTML: `"Mar 3, 2026"` (matches `%b %d, %Y`).
+Process headers and rows together in document order; propagate `current_date`
+from each header to subsequent rows until the next header.
+
+**Transaction row and field selectors**:
+```
+Row:          [class*="TransactionOverview__Root"]
+Description:  [class*="TransactionMerchantSelect"]
+Amount:       [class*="TransactionOverview__Amount"]
+Category:     [class*="TransactionOverview__Category"]
+Account name: [class*="TransactionAccount__Name"]
+Account root: [class*="TransactionAccount__Root"]
+List wrapper: [class*="TransactionsList__ListContainer"]
+```
+
+**Amount formats found**: `-1.25`, `+$2,950.00`, `$8,972.11`
+`_parse_amount` handles all of these (strips symbols, detects leading `-`).
+
+**Account name formats found**: `"Chase Checking 1230"`,
+`"Total Checking (First Republic) (...1829)"`.
+
+**If selectors break again**: run `--no-headless`, right-click a transaction
+row → Inspect, search for `TransactionOverview__` and `TransactionsList__`
+component name prefixes in the class attributes. Update constants in
+`monarch_scraper.py` and this file.
 
 ## LLM Response Parsing
 (Add entries here as you encounter Qwen 3 response format issues)

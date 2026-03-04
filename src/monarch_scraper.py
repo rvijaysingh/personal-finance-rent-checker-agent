@@ -34,15 +34,24 @@ logger = logging.getLogger(__name__)
 # UPDATE THESE IN LESSONS.md AND HERE WHEN MONARCH'S UI CHANGES
 # ---------------------------------------------------------------------------
 
-MONARCH_TRANSACTIONS_URL = "https://app.monarchmoney.com/transactions"
+MONARCH_TRANSACTIONS_URL = "https://app.monarch.com/transactions"
 LOGIN_URL_FRAGMENT = "/login"
 
-# Page load sentinel — wait for this before attempting extraction.
+# Phase 1 load sentinel — sidebar renders before transaction data.
 # Monarch uses styled-components; there is no <nav>, <main>, or role='navigation'.
-SELECTOR_APP_LOADED = (
-    "[class*='SideBar__Root'], "
-    "[class*='TransactionsList__ListContainer']"
+SELECTOR_APP_LOADED = "[class*='SideBar__Root']"
+
+# Phase 2 load sentinel — wait for actual transaction data to replace
+# the loading skeleton. TransactionsListLoading__Root is shown while
+# fetching; TransactionsList__ListContainer appears once data is ready.
+SELECTOR_TRANSACTIONS_LOADED = (
+    "[class*='TransactionsList__ListContainer'], "
+    "[class*='TransactionOverview__Root']"
 )
+
+# The transactions list scrolls inside this container, not document.body.
+# Must use JS scrollTo on this element, not window.scrollTo.
+SELECTOR_SCROLL_CONTAINER = "[class*='Page__ScrollHeaderContainer']"
 
 # Section headers separate transaction rows by date (e.g. "March 3").
 # The date is on the HEADER, not inside the row. Headers and rows are
@@ -175,13 +184,13 @@ def _extract_transactions(page: object, config: "AppConfig") -> list[Transaction
             f"{config.browser_profile_path} and log in to Monarch Money again."
         )
 
-    # Wait for the app to render
+    # Phase 1: wait for the sidebar — confirms the app shell has rendered.
     try:
         page.wait_for_selector(SELECTOR_APP_LOADED, timeout=PAGE_LOAD_TIMEOUT_MS)
     except PlaywrightTimeout as exc:
         _dump_page_state(page, "app-load-failure")
         raise ScraperError(
-            f"Monarch app did not finish loading (selector: {SELECTOR_APP_LOADED!r}). "
+            f"Monarch app shell did not render (selector: {SELECTOR_APP_LOADED!r}). "
             "This may indicate a Monarch UI change. Check LESSONS.md for selector updates."
         ) from exc
 
@@ -192,7 +201,21 @@ def _extract_transactions(page: object, config: "AppConfig") -> list[Transaction
             "Monarch session expired after page load. Manual re-login required."
         )
 
-    logger.info("Monarch loaded, beginning transaction extraction")
+    # Phase 2: wait for transaction data to replace the loading skeleton.
+    # TransactionsListLoading__Root is shown while data fetches; this selector
+    # fires only once actual rows or the list container appear.
+    logger.info("App shell loaded; waiting for transaction data to render")
+    try:
+        page.wait_for_selector(SELECTOR_TRANSACTIONS_LOADED, timeout=PAGE_LOAD_TIMEOUT_MS)
+    except PlaywrightTimeout as exc:
+        _dump_page_state(page, "transactions-load-failure")
+        raise ScraperError(
+            "Transaction list did not finish loading "
+            f"(selector: {SELECTOR_TRANSACTIONS_LOADED!r}). "
+            "Monarch may still be fetching data — try increasing PAGE_LOAD_TIMEOUT_MS."
+        ) from exc
+
+    logger.info("Transaction data rendered, beginning extraction")
 
     # Scroll to load all current-month transactions
     _scroll_to_load_transactions(page)
@@ -244,18 +267,44 @@ def _extract_transactions(page: object, config: "AppConfig") -> list[Transaction
 
 
 def _scroll_to_load_transactions(page: object) -> None:
-    """Scroll down repeatedly to trigger infinite-scroll loading."""
+    """Scroll the transaction list container to trigger infinite-scroll loading.
+
+    Monarch's transactions scroll inside Page__ScrollHeaderContainer, not
+    document.body. Scrolling window.scrollTo has no effect.
+    """
     from playwright.sync_api import Page
 
     assert isinstance(page, Page)
-    logger.debug("Scrolling to load all transactions")
+
+    # Verify the scroll container exists; fall back to body if not found.
+    container_found = page.query_selector(SELECTOR_SCROLL_CONTAINER) is not None
+    if not container_found:
+        logger.warning(
+            "Scroll container %r not found — falling back to document.body. "
+            "Update SELECTOR_SCROLL_CONTAINER if transactions are truncated.",
+            SELECTOR_SCROLL_CONTAINER,
+        )
+
+    js_scroll = f"""
+        const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");
+        (el || document.body).scrollTo(0, (el || document.body).scrollHeight);
+    """
+    js_height = f"""
+        const el = document.querySelector("{SELECTOR_SCROLL_CONTAINER}");
+        return (el || document.body).scrollHeight;
+    """
+
+    logger.debug(
+        "Scrolling %s to load all transactions",
+        SELECTOR_SCROLL_CONTAINER if container_found else "document.body",
+    )
 
     previous_height = 0
     for attempt in range(MAX_SCROLL_ATTEMPTS):
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.evaluate(js_scroll)
         page.wait_for_timeout(800)  # allow React to re-render
 
-        new_height = page.evaluate("document.body.scrollHeight")
+        new_height = page.evaluate(js_height)
         if new_height == previous_height:
             logger.debug("Scroll complete after %d attempts (no new content)", attempt + 1)
             break
@@ -279,11 +328,27 @@ def _parse_all_rows(page: object) -> list[TransactionRecord]:
 
     assert isinstance(page, Page)
 
+    # Log individual selector counts to help diagnose partial failures.
+    header_count = len(page.query_selector_all(SELECTOR_SECTION_HEADER))
+    row_count = len(page.query_selector_all(SELECTOR_TRANSACTION_ROW))
+    logger.debug(
+        "Selector counts: section_headers=%d, transaction_rows=%d",
+        header_count, row_count,
+    )
+    for sel, label in [
+        (SELECTORS_DESCRIPTION[0], "description"),
+        (SELECTORS_AMOUNT[0], "amount"),
+        (SELECTORS_CATEGORY[0], "category"),
+        (SELECTORS_ACCOUNT[0], "account"),
+    ]:
+        count = len(page.query_selector_all(sel))
+        logger.debug("  %-15s selector (%s): %d elements", label, sel, count)
+
     # Combined selector preserves document order across both element types.
     all_elements = page.query_selector_all(
         f"{SELECTOR_SECTION_HEADER}, {SELECTOR_TRANSACTION_ROW}"
     )
-    logger.debug("Found %d section headers + transaction rows", len(all_elements))
+    logger.debug("Combined query returned %d elements total", len(all_elements))
 
     current_date: date | None = None
     transactions: list[TransactionRecord] = []

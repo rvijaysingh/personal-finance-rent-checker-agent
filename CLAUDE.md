@@ -1,5 +1,9 @@
 # Personal Finance Agent: Rent Payment Checker
 
+## Required Reading
+Always read LESSONS.md before making any changes to understand
+known issues and working patterns.
+
 ## Purpose
 An automated agent that checks Monarch Money for tenant rent payments
 across 3 rental properties, compares them against expected amounts
