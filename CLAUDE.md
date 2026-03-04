@@ -20,9 +20,25 @@ missing, wrong amount).
   (credentials saved in browser, no programmatic login needed each run)
 - Email: Gmail SMTP (credentials in .env.json)
 - No external APIs for Monarch (browser scraping only)
-- See docs/architecture.md for identified risks and mitigations.
-  All modules should be built defensively against the risks
-  identified in that document.
+
+## Documentation Structure
+
+- docs/architecture.md — System design: pipeline stages, module
+  responsibilities, data flow, key design decisions. Read this
+  first for system understanding.
+- docs/risks.md — Identified risks with likelihood, impact, and
+  concrete mitigations. Review when adding new modules or debugging
+  failures.
+- docs/testing.md — Test case table, fixture inventory, testing
+  strategy. Read before writing or updating tests.
+- docs/config.md — Config file schemas, shared vs project-specific
+  fields, example values. Reference for machine setup or new agents.
+- LESSONS.md — Operational findings from debugging: working
+  selectors, Monarch quirks, Qwen response format issues.
+All modules should be built defensively against the risks identified
+in docs/risks.md. Run pytest before every commit. Test coverage
+requirements are defined in docs/testing.md.
+
 
 ## Project Structure
 personal-finance-rent-checker-agent/
