@@ -10,6 +10,15 @@ across 3 rental properties, compares them against expected amounts
 and due dates, and emails a summary of payment status (paid, late,
 missing, wrong amount).
 
+## Development Loop
+- Test command: `pytest tests/ -x`
+- After any code change, run the test command and fix all failures
+  before considering the task complete. Do not ask the user to run
+  code or paste errors.
+- This is a browser automation agent. On selector or timeout test
+  failures, check logs/debug/latest.json for HTML snapshots and
+  selector context before attempting a fix.
+  
 ## Architecture Constraints
 - Runtime: Windows 10/11 server, Python 3.13
 - LLM: Ollama running locally at http://localhost:11434
