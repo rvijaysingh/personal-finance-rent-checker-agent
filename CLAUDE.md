@@ -68,6 +68,8 @@ personal-finance-rent-checker-agent/
   tests/
     test_matcher.py
     test_config.py
+    fixtures/ 19 JSON fixture files used by the test       
+  suite
   docs/
     architecture.md
   logs/run_history.json 
@@ -99,8 +101,8 @@ Three config sources:
 ### Payment Matching (Three Steps)
 - A tenant may pay rent up to early_payment_days (default 3) before
   the due date, landing the payment in the previous month. The
-  scraper pulls transactions from the last early_payment_days of
-  the previous month through the current month. All three steps
+  scraper pulls transactions from the lookback_start date through current month. Lookback_start_date is  (1st of current month) - early_payment_days; for example, on Mar 8
+  with early_payment_days=3, that's Feb 26 through the current month. All three steps
   search this full window.
 
 Step 1 - Category Match:
@@ -124,6 +126,7 @@ Step 2 - Amount Fallback (only for properties not found in Step 1):
 - Flag any matches as "possible rent payment - needs manual review"
   and include the transaction description in the output.
 - This catches cases where Monarch categorization was missed or wrong.
+-Matches must be scoped to the prop.account being checked. Never search across all accounts — a mortgage payment or other deposit on a different account must never be matched to a rent property.
 
 Step 3 - LLM Fallback (only for properties not found in Steps 1 or 2):
 - If neither Step 1 nor Step 2 finds a match, send all remaining
@@ -138,6 +141,7 @@ Step 3 - LLM Fallback (only for properties not found in Steps 1 or 2):
   "MISSING - no payment found."
 - If Ollama is unreachable, skip Step 3 and flag as "MISSING" with
   a note that LLM check was skipped.
+  -Matches must be scoped to the prop.account being checked. Never search across all accounts — a mortgage payment or other deposit on a different account must never be matched to a rent property.
 
 
 ### Notification

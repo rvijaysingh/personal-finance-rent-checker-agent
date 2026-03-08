@@ -77,15 +77,16 @@ def main(argv: list[str] | None = None) -> int:
             if prior_status == "completed_email_failed":
                 logger.info(
                     "Previous run this month completed but email failed. "
-                    "Will retry email delivery."
+                    "Re-running full pipeline to ensure fresh data and retry notification."
                 )
-                return _retry_email(config, today, dry_run=args.dry_run)
-            logger.info(
-                "Already completed successfully this month (%s). "
-                "Use --force to re-run.",
-                today.strftime("%B %Y"),
-            )
-            return 0
+                # Fall through to full scrape + match + email pipeline.
+            else:
+                logger.info(
+                    "Already completed successfully this month (%s). "
+                    "Use --force to re-run.",
+                    today.strftime("%B %Y"),
+                )
+                return 0
     elif args.force:
         logger.info("--force flag set; bypassing idempotency check")
 
@@ -255,76 +256,6 @@ def _warmup_ollama(config: "AppConfig") -> None:
             time.monotonic() - t0,
             exc,
         )
-
-
-def _retry_email(config: "AppConfig", today: date, *, dry_run: bool) -> int:
-    """Re-send the email for a run that completed but failed to notify."""
-    logger.info("Retrying email delivery for %s", today.strftime("%B %Y"))
-
-    history = _load_run_history(config.log_path)
-    this_month = today.strftime("%Y-%m")
-    prior_record = next(
-        (
-            r for r in reversed(history)
-            if r.get("run_date", "").startswith(this_month)
-            and r.get("overall_status") == "completed_email_failed"
-        ),
-        None,
-    )
-
-    if prior_record is None:
-        logger.warning("No completed_email_failed record found; running fresh")
-        return 1
-
-    # Reconstruct results from stored record
-    from src.models import PaymentStatus, PropertyResult, TransactionRecord
-
-    results = []
-    for pr in prior_record.get("property_results", []):
-        mt = pr.get("matched_transaction")
-        matched = None
-        if mt:
-            matched = TransactionRecord(
-                date=date.fromisoformat(mt["date"]),
-                description=mt.get("description", ""),
-                amount=mt.get("amount", 0.0),
-                account=mt.get("account", ""),
-                category=mt.get("category", ""),
-            )
-        try:
-            status = PaymentStatus(pr["status"])
-        except (KeyError, ValueError):
-            status = PaymentStatus.MISSING
-        results.append(
-            PropertyResult(
-                property_name=pr.get("property_name", "Unknown"),
-                status=status,
-                matched_transaction=matched,
-                notes=pr.get("notes", ""),
-                step_resolved_by=pr.get("step_resolved_by"),
-            )
-        )
-
-    from src.notifier import send_notification
-
-    email_sent = send_notification(results, config, run_date=today, dry_run=dry_run)
-
-    if email_sent:
-        # Upgrade the record to 'completed'
-        for r in reversed(history):
-            if (
-                r.get("run_date", "").startswith(this_month)
-                and r.get("overall_status") == "completed_email_failed"
-            ):
-                r["overall_status"] = "completed"
-                r["email_retry_sent"] = datetime.now().isoformat()
-                break
-        _write_history(config.log_path, history, dry_run=dry_run)
-        logger.info("Email retry succeeded; record updated to 'completed'")
-        return 0
-    else:
-        logger.error("Email retry also failed")
-        return 1
 
 
 # ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@ emails a payment status summary. Runs on a schedule; no web interface or API.
     │
     └── [logs/run_history.json]
             ├── read:  idempotency check
-            └── write: audit trail + email-retry data
+            └── write: audit trail
 ```
 
 ---
@@ -47,11 +47,17 @@ emails a payment status summary. Runs on a schedule; no web interface or API.
 ## Data Flow
 
 1. **Idempotency check.** Read `run_history.json`. If this month is `completed`,
-   exit. If `completed_email_failed`, retry email from stored results and skip
-   scraping. Otherwise proceed.
+   exit. If `completed_email_failed`, log the prior failure and fall through to
+   the full pipeline — scrape fresh data and retry notification. Otherwise proceed.
 
 2. **Config load.** `config_loader` validates all three sources. Any missing
    field raises `ConfigError` immediately naming the field.
+
+2a. **Ollama warm-up.** Send a tiny prompt to force the model into GPU memory
+   before the scraper starts. Non-fatal: if Ollama is unreachable, log a warning
+   and continue. Steps 1 and 2 are fully deterministic and do not need Ollama.
+   Qwen 3 8B can take up to 2 minutes on a cold start; doing this now means
+   that wait happens before, not during, the matching pipeline.
 
 3. **Scrape.** `monarch_scraper` navigates Monarch Money via Playwright,
    intercepts the internal GraphQL API responses, and returns
@@ -99,10 +105,17 @@ GraphQL responses via `page.on("response")`, then replays
 context includes cookies but still requires the `Authorization: Token` header
 captured from the original outgoing request.
 
-**DD2: Three-Step Hybrid Matching**
+**DD2: Three-Step Hybrid Matching with Two-Pass Evaluation**
 Category match (Step 1) → amount fallback (Step 2) → LLM review (Step 3).
 Each property exits the pipeline as soon as resolved. LLM is only called for
 genuinely ambiguous cases, keeping cost and latency low.
+
+The pipeline runs in two passes to prevent cross-property transaction
+contamination. **Pass 1** runs Steps 1 and 2 for all properties, tracking
+claimed transaction object IDs. **Pass 2** runs Step 3 only for unresolved
+properties, and only offers transactions not already claimed. For example: if
+Pass 1 matches a $2,950 deposit to Links Lane via Step 2, that same transaction
+is never offered to Calmar's Step 3 evaluation.
 
 **DD3: Persistent Browser Profile**
 Operator logs in once manually; Playwright reuses the saved session. Avoids
@@ -136,10 +149,12 @@ All cross-module types (`TransactionRecord`, `PropertyConfig`, `PropertyResult`,
 `PaymentStatus`) live in one file. Prevents circular imports; types import
 nothing from `src/`.
 
-**DD10: `completed_email_failed` Status + Email Retry**
-SMTP failure writes `completed_email_failed` to `run_history.json` alongside
-serialised `PropertyResult` data. Next invocation detects this status, loads
-stored results, and retries email without re-scraping. See
+**DD10: `completed_email_failed` Status + Full Pipeline Retry**
+SMTP failure writes `completed_email_failed` to `run_history.json`. The next
+invocation detects this status, logs the prior failure, and re-runs the full
+scrape + match + email pipeline rather than reconstructing from stored results.
+This ensures the retry uses fresh transaction data and avoids deserialisation
+complexity. A new `completed` record is appended on success. See
 [docs/risks.md](risks.md) for failure mode details.
 
 ---
@@ -172,4 +187,4 @@ class TransactionRecord(TypedDict):
 ```
 
 `run_history.json` serialises dates as ISO strings and `PaymentStatus` as
-string values so stored results can be deserialised for email retry (DD10).
+string values for human-readable audit trail and future multi-month analysis.
