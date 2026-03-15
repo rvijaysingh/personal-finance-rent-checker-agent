@@ -12,7 +12,12 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from src.models import PaymentStatus, PropertyResult, TransactionRecord
-from src.notifier import _build_subject, _fallback_body, send_notification
+from src.notifier import (
+    _build_subject,
+    _compute_summary_line,
+    _fallback_body,
+    send_notification,
+)
 from tests.conftest import decode_mime_body, make_cfg_mock, make_txn
 
 
@@ -45,6 +50,21 @@ def _missing_result(name: str) -> PropertyResult:
         matched_transaction=None,
         notes="No match found after all three steps.",
         step_resolved_by=3,
+    )
+
+
+def _late_result(name: str, amount: float, category: str) -> PropertyResult:
+    return PropertyResult(
+        property_name=name,
+        status=PaymentStatus.PAID_LATE,
+        matched_transaction=make_txn(
+            txn_date=date(2026, 3, 12),  # past grace deadline
+            description=f"Zelle From {name} tenant",
+            amount=amount,
+            category=category,
+        ),
+        notes="Received 2026-03-12 — LATE (deadline was 2026-03-06).",
+        step_resolved_by=1,
     )
 
 
@@ -152,8 +172,45 @@ def test_n02_subject_action_needed_for_missing_result():
     assert "ACTION NEEDED" in subject
 
 
+def test_subject_late_payment_when_only_paid_late():
+    """PAID_LATE with no missing properties → subject 'LATE PAYMENT', not 'ACTION NEEDED'."""
+    results = [
+        _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _late_result("Calmar", 3100.00, "Rental Income (Calmar)"),
+        _paid_result("505", 2800.00, "Rental Income (505)"),
+    ]
+    subject = _build_subject(results, RUN_DATE, "[Agent - Rent Check]")
+    assert "LATE PAYMENT" in subject
+    assert "ACTION NEEDED" not in subject
+    assert "All Received" not in subject
+
+
+def test_subject_action_needed_takes_priority_over_late():
+    """A missing property overrides a late property → ACTION NEEDED, not LATE PAYMENT."""
+    results = [
+        _late_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _missing_result("Calmar"),
+    ]
+    subject = _build_subject(results, RUN_DATE, "[Agent - Rent Check]")
+    assert "ACTION NEEDED" in subject
+    assert "LATE PAYMENT" not in subject
+
+
+def test_subject_all_received_when_all_on_time():
+    """All properties paid on time → 'All Received', no ACTION NEEDED or LATE PAYMENT."""
+    results = [
+        _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _paid_result("Calmar", 3100.00, "Rental Income (Calmar)"),
+        _paid_result("505", 2800.00, "Rental Income (505)"),
+    ]
+    subject = _build_subject(results, RUN_DATE, "[Agent - Rent Check]")
+    assert "All Received" in subject
+    assert "ACTION NEEDED" not in subject
+    assert "LATE PAYMENT" not in subject
+
+
 def test_n02_fallback_body_separates_paid_and_missing():
-    """N-02 (unit): Fallback body lists paid and missing properties separately."""
+    """N-02 (unit): Fallback body lists paid and missing properties; summary line reflects facts."""
     results = [
         _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
         _missing_result("Calmar"),
@@ -162,7 +219,7 @@ def test_n02_fallback_body_separates_paid_and_missing():
 
     assert "Links Lane" in body
     assert "Calmar" in body
-    assert "ACTION NEEDED" in body
+    assert "not yet received" in body  # from _compute_summary_line
     assert "MISSING" in body
 
 
@@ -268,3 +325,135 @@ def test_fallback_body_no_llm_note_when_flag_false():
     results = [_paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)")]
     body = _fallback_body(results, RUN_DATE, llm_unavailable=False, error_message=None)
     assert "LLM review and email generation were unavailable" not in body
+
+
+# ---------------------------------------------------------------------------
+# _compute_summary_line unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_compute_summary_line_all_on_time():
+    results = [
+        _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _paid_result("Calmar", 3100.00, "Rental Income (Calmar)"),
+        _paid_result("505", 2800.00, "Rental Income (505)"),
+    ]
+    assert _compute_summary_line(results) == "All 3 rent payments received on time."
+
+
+def test_compute_summary_line_some_late_no_missing():
+    results = [
+        _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _late_result("Calmar", 3100.00, "Rental Income (Calmar)"),
+        _paid_result("505", 2800.00, "Rental Income (505)"),
+    ]
+    line = _compute_summary_line(results)
+    assert line == "2 of 3 payments received on time. 1 received late."
+
+
+def test_compute_summary_line_some_missing():
+    results = [
+        _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _missing_result("Calmar"),
+        _missing_result("505"),
+    ]
+    line = _compute_summary_line(results)
+    assert line == "1 of 3 payments received. 2 not yet received."
+
+
+def test_compute_summary_line_missing_takes_priority_over_late():
+    """When both missing and late are present, use the missing formula."""
+    results = [
+        _late_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+        _missing_result("Calmar"),
+    ]
+    line = _compute_summary_line(results)
+    assert "not yet received" in line
+    assert "received late" not in line
+
+
+# ---------------------------------------------------------------------------
+# HTML highlighting in fallback body
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_body_late_payment_has_yellow_highlight():
+    results = [
+        _late_result("Calmar", 3100.00, "Rental Income (Calmar)"),
+    ]
+    body = _fallback_body(results, RUN_DATE, llm_unavailable=False, error_message=None)
+    assert "#FFEB3B" in body
+    assert "#EF5350" not in body
+
+
+def test_fallback_body_missing_has_red_highlight():
+    results = [
+        _missing_result("Calmar"),
+    ]
+    body = _fallback_body(results, RUN_DATE, llm_unavailable=False, error_message=None)
+    assert "#EF5350" in body
+    assert "#FFEB3B" not in body
+
+
+def test_fallback_body_on_time_has_no_highlight():
+    results = [
+        _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
+    ]
+    body = _fallback_body(results, RUN_DATE, llm_unavailable=False, error_message=None)
+    assert "#FFEB3B" not in body
+    assert "#EF5350" not in body
+
+
+def test_fallback_body_highlights_only_name_and_status_not_full_line():
+    """The yellow/red <span> must close before the transaction detail."""
+    results = [_late_result("Calmar", 3100.00, "Rental Income (Calmar)")]
+    body = _fallback_body(results, RUN_DATE, llm_unavailable=False, error_message=None)
+    # The highlight span must close (</span>) before the transaction line appears.
+    highlight_end = body.find("</span>")
+    transaction_start = body.find("Transaction:")
+    assert highlight_end != -1
+    assert transaction_start != -1
+    assert highlight_end < transaction_start
+
+
+# ---------------------------------------------------------------------------
+# LLM validation: discard body that omits the required summary line
+# ---------------------------------------------------------------------------
+
+
+@patch("src.notifier._call_ollama_for_summary")
+@patch("smtplib.SMTP")
+def test_llm_body_without_summary_line_falls_back_to_python_template(mock_smtp, mock_ollama):
+    """If LLM response omits the required summary line, fallback body is used instead."""
+    mock_ollama.return_value = "<p>Everything looks fine.</p>"  # no summary line
+
+    results = [_paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)")]
+    cfg = _make_notifier_cfg()
+
+    sent = send_notification(results, cfg, run_date=RUN_DATE)
+
+    assert sent is True
+    call_args = mock_smtp.return_value.__enter__.return_value.sendmail.call_args
+    body = decode_mime_body(call_args[0][2])
+    # Fallback body must contain the correct summary line
+    assert "All 1 rent payments received on time." in body
+    # LLM text must NOT appear
+    assert "Everything looks fine." not in body
+
+
+@patch("src.notifier._call_ollama_for_summary")
+@patch("smtplib.SMTP")
+def test_llm_body_with_summary_line_is_used(mock_smtp, mock_ollama):
+    """If LLM response contains the required summary line, it is accepted."""
+    summary = "All 1 rent payments received on time."
+    mock_ollama.return_value = f"<p>{summary}</p><ul><li>Links Lane: paid.</li></ul>"
+
+    results = [_paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)")]
+    cfg = _make_notifier_cfg()
+
+    sent = send_notification(results, cfg, run_date=RUN_DATE)
+
+    assert sent is True
+    call_args = mock_smtp.return_value.__enter__.return_value.sendmail.call_args
+    body = decode_mime_body(call_args[0][2])
+    assert "Links Lane: paid." in body

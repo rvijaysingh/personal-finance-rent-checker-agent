@@ -66,6 +66,30 @@ def test_r01_completed_email_failed_detected_as_already_run(tmp_path):
     assert status == "completed_email_failed"
 
 
+def test_r01_late_payment_detected_as_already_run(tmp_path):
+    """R-01: 'late_payment' status → _check_already_run returns (True, 'late_payment').
+
+    A late payment is still a completed run — payments were received, just late.
+    """
+    log_path = tmp_path / "run_history.json"
+    records = [
+        {
+            "run_date": "2026-03-12T10:00:00",
+            "check_month": "2026-03",
+            "overall_status": "late_payment",
+            "email_sent": True,
+            "errors": [],
+            "property_results": [],
+        }
+    ]
+    _write_history(log_path, records)
+
+    already_run, status = _check_already_run(log_path, date(2026, 3, 15))
+
+    assert already_run is True
+    assert status == "late_payment"
+
+
 def test_r01_previous_month_completed_does_not_block_current_month(tmp_path):
     """R-01: Previous month 'completed' does not trigger skip for a different month."""
     log_path = tmp_path / "run_history.json"

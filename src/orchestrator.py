@@ -180,15 +180,20 @@ def main(argv: list[str] | None = None) -> int:
     from src.models import PaymentStatus
 
     ATTENTION_STATUSES = {
-        PaymentStatus.PAID_LATE,
         PaymentStatus.WRONG_AMOUNT,
         PaymentStatus.POSSIBLE_MATCH,
         PaymentStatus.LLM_SUGGESTED,
         PaymentStatus.MISSING,
         PaymentStatus.LLM_SKIPPED_MISSING,
     }
-    needs_attention = any(r.status in ATTENTION_STATUSES for r in results)
-    overall_status = "action_needed" if needs_attention else "completed"
+    LATE_STATUSES = {PaymentStatus.PAID_LATE}
+
+    if any(r.status in ATTENTION_STATUSES for r in results):
+        overall_status = "action_needed"
+    elif any(r.status in LATE_STATUSES for r in results):
+        overall_status = "late_payment"
+    else:
+        overall_status = "completed"
 
     email_sent = send_notification(
         results,
@@ -278,7 +283,7 @@ def _check_already_run(log_path: Path, today: date) -> tuple[bool, str | None]:
         if not run_date_str.startswith(this_month):
             continue
         status = record.get("overall_status", "")
-        if status in ("completed", "completed_email_failed"):
+        if status in ("completed", "late_payment", "completed_email_failed"):
             logger.debug(
                 "Found prior run this month: run_date=%s status=%s",
                 run_date_str, status,
