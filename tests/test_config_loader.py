@@ -65,7 +65,6 @@ def _write_prompts(tmp_path: Path) -> None:
     d = tmp_path / "prompts"
     d.mkdir(exist_ok=True)
     (d / "rent_match.md").write_text("Template: {{property_name}}", encoding="utf-8")
-    (d / "payment_summary.md").write_text("Summary: {{results_json}}", encoding="utf-8")
 
 
 def _setup_valid_env(tmp_path: Path, monkeypatch) -> Path:

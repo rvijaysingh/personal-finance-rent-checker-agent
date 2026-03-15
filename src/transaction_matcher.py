@@ -210,20 +210,14 @@ def _step1_category_match(
     # Use the first (most recent if sorted by date desc) match
     txn = matches[0]
 
-    # Evaluate amount
+    # Evaluate amount — fall through to Step 2/3 if wrong amount
     if not _amount_matches(txn["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT):
-        return PropertyResult(
-            property_name=prop.name,
-            status=PaymentStatus.WRONG_AMOUNT,
-            matched_transaction=txn,
-            notes=(
-                f"{duplicate_note}"
-                f"Expected ${prop.expected_rent:.2f}, received ${txn['amount']:.2f} "
-                f"(difference: ${abs(txn['amount'] - prop.expected_rent):.2f}). "
-                f"Category: {txn['category']!r}."
-            ),
-            step_resolved_by=1,
+        logger.debug(
+            "Step 1 [%s]: category match found but amount %.2f does not match "
+            "expected %.2f (tolerance %.1f%%) — falling through to Step 2/3",
+            prop.name, txn["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT,
         )
+        return None
 
     # Evaluate timeliness
     on_time = _is_on_time(txn["date"], prop.due_day, prop.grace_period_days, check_month)
@@ -285,21 +279,24 @@ def _step2_amount_match(
         if len(matches) > 1 else ""
     )
 
+    on_time = _is_on_time(txn["date"], prop.due_day, prop.grace_period_days, check_month)
+    status = PaymentStatus.PAID_ON_TIME if on_time else PaymentStatus.PAID_LATE
     deadline = _due_deadline(prop.due_day, prop.grace_period_days, check_month)
-
+    timeliness_note = (
+        f"Received {txn['date']} — on time (deadline {deadline})."
+        if on_time
+        else f"Received {txn['date']} — LATE (deadline was {deadline})."
+    )
+    category_note = (
+        f"Matched by amount (${txn['amount']:.2f}); "
+        f"category in Monarch was {txn['category']!r}, not {prop.category_label!r}. "
+        "Consider re-categorising in Monarch. "
+    )
     return PropertyResult(
         property_name=prop.name,
-        status=PaymentStatus.POSSIBLE_MATCH,
+        status=status,
         matched_transaction=txn,
-        notes=(
-            f"{multi_note}"
-            f"Amount ${txn['amount']:.2f} matches expected ${prop.expected_rent:.2f} "
-            f"but category is {txn['category']!r} (not {prop.category_label!r}). "
-            f"Received {txn['date']} (deadline {deadline}). "
-            f"Transaction: {txn['description']!r}. "
-            "MANUAL REVIEW RECOMMENDED — confirm this is the rent payment and "
-            "re-categorize in Monarch if so."
-        ),
+        notes=f"{multi_note}{category_note}{timeliness_note}",
         step_resolved_by=2,
     )
 
@@ -315,18 +312,20 @@ def _step3_llm_match(
     config: "AppConfig",
     check_month: date,
 ) -> PropertyResult:
-    """Ask Ollama whether any transaction could be the rent payment.
+    """Ask an LLM whether any transaction could be the rent payment.
 
-    Returns a PropertyResult with status LLM_SUGGESTED, MISSING, or
-    LLM_SKIPPED_MISSING (if Ollama is unreachable).
+    Uses Anthropic (claude-haiku) as the primary LLM if an API key is
+    configured, falling back to Ollama if Anthropic is unavailable or not
+    configured. If both are unavailable, returns MISSING.
+
+    Sends ALL unmatched positive-amount transactions to the LLM — no account
+    filter. The LLM's job is to find matches the deterministic rules missed,
+    including transactions from unexpected accounts or with non-standard
+    categorisation.
+
+    Returns a PropertyResult with status REVIEW_NEEDED or MISSING.
     """
-    # Only consider positive-amount transactions in the property's deposit
-    # account. This prevents outgoing payments from other accounts (e.g.
-    # mortgage payments) from being sent to the LLM as rent candidates.
-    candidates = [
-        t for t in transactions
-        if t["amount"] > 0 and prop.account in t["account"]
-    ]
+    candidates = [t for t in transactions if t["amount"] > 0]
 
     if not candidates:
         return PropertyResult(
@@ -334,10 +333,9 @@ def _step3_llm_match(
             status=PaymentStatus.MISSING,
             matched_transaction=None,
             notes=(
-                "Step 3 ran but found no deposit-account transactions to review. "
-                "All positive transactions in the deposit account were either "
-                "matched by Steps 1/2 for other properties or none were present "
-                "in the lookback window."
+                "Step 3 ran but found no positive-amount transactions to review. "
+                "All positive transactions were matched by Steps 1/2 for other "
+                "properties, or none were present in the lookback window."
             ),
             step_resolved_by=3,
         )
@@ -345,7 +343,6 @@ def _step3_llm_match(
     prompt_template = config.prompts.get("rent_match", "")
     deadline = _due_deadline(prop.due_day, prop.grace_period_days, check_month)
 
-    # Serialise candidates for the prompt (date as ISO string for LLM)
     candidates_data = [
         {
             "index": i,
@@ -365,6 +362,8 @@ def _step3_llm_match(
         .replace("{{expected_rent}}", f"{prop.expected_rent:.2f}")
         .replace("{{due_day}}", str(prop.due_day))
         .replace("{{grace_period_days}}", str(prop.grace_period_days))
+        .replace("{{category_label}}", prop.category_label)
+        .replace("{{account}}", prop.account)
         .replace("{{transactions_json}}", json.dumps(candidates_data, indent=2))
     )
 
@@ -373,32 +372,47 @@ def _step3_llm_match(
         prop.name, len(candidates), prompt,
     )
 
-    try:
-        if not _check_ollama_reachable(config.ollama_endpoint):
-            raise OllamaUnavailableError(
-                f"Health check failed — /api/tags did not respond at "
-                f"{config.ollama_endpoint} (5 s timeout)"
+    # --- Anthropic primary ---
+    raw_response: str | None = None
+    if getattr(config, "anthropic_api_key", ""):
+        try:
+            raw_response = _call_anthropic(
+                config.anthropic_api_key, config.anthropic_model, prompt
             )
-        raw_response = _call_ollama(
-            config.ollama_endpoint, config.ollama_model, prompt
-        )
-    except OllamaUnavailableError as exc:
-        logger.warning(
-            "Ollama unavailable for Step 3 (%s): %s. Marking as LLM_SKIPPED_MISSING.",
-            prop.name, exc,
-        )
-        return PropertyResult(
-            property_name=prop.name,
-            status=PaymentStatus.LLM_SKIPPED_MISSING,
-            matched_transaction=None,
-            notes=(
-                "LLM check skipped — Ollama unreachable. "
-                "Steps 1 and 2 found no match. Manual review required."
-            ),
-            step_resolved_by=3,
-        )
+            logger.debug("Step 3 Anthropic response for %s:\n%s", prop.name, raw_response)
+        except Exception as exc:
+            logger.warning(
+                "Anthropic unavailable for Step 3 (%s): %s. Falling back to Ollama.",
+                prop.name, exc,
+            )
 
-    logger.debug("Step 3 raw response for %s:\n%s", prop.name, raw_response)
+    # --- Ollama fallback ---
+    if raw_response is None:
+        try:
+            if not _check_ollama_reachable(config.ollama_endpoint):
+                raise OllamaUnavailableError(
+                    f"Health check failed — /api/tags did not respond at "
+                    f"{config.ollama_endpoint} (5 s timeout)"
+                )
+            raw_response = _call_ollama(
+                config.ollama_endpoint, config.ollama_model, prompt
+            )
+            logger.debug("Step 3 Ollama response for %s:\n%s", prop.name, raw_response)
+        except OllamaUnavailableError as exc:
+            logger.warning(
+                "Ollama unavailable for Step 3 (%s): %s. Marking as MISSING.",
+                prop.name, exc,
+            )
+            return PropertyResult(
+                property_name=prop.name,
+                status=PaymentStatus.MISSING,
+                matched_transaction=None,
+                notes=(
+                    "LLM check unavailable — Anthropic and Ollama both unreachable. "
+                    "Steps 1 and 2 found no match. Manual review required."
+                ),
+                step_resolved_by=3,
+            )
 
     return _interpret_llm_response(prop, raw_response, candidates, deadline)
 
@@ -409,7 +423,16 @@ def _interpret_llm_response(
     candidates: list[TransactionRecord],
     deadline: date,
 ) -> PropertyResult:
-    """Parse the LLM JSON response and build a PropertyResult."""
+    """Parse the LLM JSON response and build a PropertyResult.
+
+    Expected format:
+        {
+            "status": "likely_match" | "no_match_found",
+            "matched_transaction_index": <int or null>,
+            "confidence": "high" | "medium" | "low",
+            "rationale": "<1-2 sentence explanation>"
+        }
+    """
     parsed = _parse_json_response(raw_response)
 
     if parsed is None:
@@ -428,47 +451,38 @@ def _interpret_llm_response(
             step_resolved_by=3,
         )
 
-    match_found = parsed.get("match_found", False)
-    reasoning = parsed.get("reasoning", "No reasoning provided.")
-    indices = parsed.get("transaction_indices", [])
+    status_val = parsed.get("status", "no_match_found")
+    rationale = parsed.get("rationale", "No rationale provided.")
+    index = parsed.get("matched_transaction_index")
     confidence = parsed.get("confidence", "unknown")
 
-    if not match_found or not indices:
+    if status_val != "likely_match" or index is None:
         return PropertyResult(
             property_name=prop.name,
             status=PaymentStatus.MISSING,
             matched_transaction=None,
-            notes=f"LLM found no match. Reasoning: {reasoning}",
+            notes=f"LLM found no match. Rationale: {rationale}",
             step_resolved_by=3,
         )
 
-    # Use the first suggested index
     try:
-        matched_txn = candidates[indices[0]]
-    except IndexError:
+        matched_txn = candidates[index]
+    except (IndexError, TypeError):
         logger.error(
-            "LLM returned out-of-range index %d for %s (have %d candidates)",
-            indices[0], prop.name, len(candidates),
+            "LLM returned out-of-range or non-integer index %r for %s "
+            "(have %d candidates)",
+            index, prop.name, len(candidates),
         )
         matched_txn = None
 
-    multi_txn_note = ""
-    if len(indices) > 1:
-        total = sum(candidates[i]["amount"] for i in indices if i < len(candidates))
-        multi_txn_note = (
-            f"LLM suggests {len(indices)} transactions may be a split payment "
-            f"(combined ${total:.2f}). "
-        )
-
     return PropertyResult(
         property_name=prop.name,
-        status=PaymentStatus.LLM_SUGGESTED,
+        status=PaymentStatus.REVIEW_NEEDED,
         matched_transaction=matched_txn,
         notes=(
-            f"{multi_txn_note}"
             f"LLM-suggested match (confidence: {confidence}). "
-            f"Reasoning: {reasoning} "
-            "MANUAL REVIEW REQUIRED."
+            f"Rationale: {rationale} "
+            "HUMAN REVIEW REQUIRED."
         ),
         step_resolved_by=3,
     )
@@ -524,6 +538,41 @@ def _call_ollama(endpoint: str, model: str, prompt: str) -> str:
         raise OllamaUnavailableError(
             f"Ollama returned non-JSON response: {exc}"
         ) from exc
+
+
+def _call_anthropic(api_key: str, model: str, prompt: str) -> str:
+    """Call Anthropic Messages API and return the response text.
+
+    Args:
+        api_key: Anthropic API key.
+        model: Model ID, e.g. 'claude-haiku-4-5-20251001'
+        prompt: Full prompt string.
+
+    Returns:
+        LLM response text.
+
+    Raises:
+        Exception: On any HTTP or network failure.
+    """
+    url = "https://api.anthropic.com/v1/messages"
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("x-api-key", api_key)
+    req.add_header("anthropic-version", "2023-06-01")
+
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        content = data.get("content", [])
+        for block in content:
+            if block.get("type") == "text":
+                return block["text"]
+        return ""
 
 
 def _parse_json_response(text: str) -> dict | None:

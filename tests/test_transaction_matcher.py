@@ -33,15 +33,31 @@ from tests.conftest import (
 
 
 def _llm_no_match() -> str:
-    return json.dumps({"match_found": False, "transaction_indices": [], "confidence": "low", "reasoning": "No match."})
+    return json.dumps({
+        "status": "no_match_found",
+        "matched_transaction_index": None,
+        "confidence": "low",
+        "rationale": "No matching transaction found.",
+    })
 
 
 def _llm_match(index: int = 0) -> str:
-    return json.dumps({"match_found": True, "transaction_indices": [index], "confidence": "high", "reasoning": "Match found."})
+    return json.dumps({
+        "status": "likely_match",
+        "matched_transaction_index": index,
+        "confidence": "high",
+        "rationale": "Match found.",
+    })
 
 
 def _llm_split(indices: list[int]) -> str:
-    return json.dumps({"match_found": True, "transaction_indices": indices, "confidence": "medium", "reasoning": "Split payment detected."})
+    # New format only supports a single index; use first index, note split in rationale
+    return json.dumps({
+        "status": "likely_match",
+        "matched_transaction_index": indices[0] if indices else 0,
+        "confidence": "medium",
+        "rationale": "Split payment detected — multiple transactions sum to expected rent.",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +162,9 @@ def test_m05_split_payment_neither_matches_alone_llm_flags_split(mock_llm, mock_
     results = match_properties(txns, cfg)
 
     assert len(results) == 1
-    assert results[0].status == PaymentStatus.LLM_SUGGESTED
+    assert results[0].status == PaymentStatus.REVIEW_NEEDED
     assert results[0].step_resolved_by == 3
-    assert "split payment" in results[0].notes.lower()
+    assert "review" in results[0].notes.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -191,17 +207,27 @@ def test_m07_late_payment_after_grace_flagged():
 # ---------------------------------------------------------------------------
 
 
-def test_m08_category_match_wrong_amount_returns_wrong_amount_not_llm():
-    """M-08: Category matches but amount wrong → WRONG_AMOUNT from Step 1; does not fall to LLM."""
+@patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
+@patch("src.transaction_matcher._call_ollama")
+def test_m08_category_match_wrong_amount_falls_through_to_step3(mock_llm, mock_health):
+    """M-08: Category matches but amount wrong → Step 1 returns None; pipeline proceeds to Step 3."""
+    mock_llm.return_value = _llm_no_match()
     txns = load_txn_fixture("category_mismatch.json")
     assert txns[0]["amount"] == 1500.00
 
-    result = _step1_category_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
+    # Step 1 should no longer return WRONG_AMOUNT — it falls through
+    result_s1 = _step1_category_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
+    assert result_s1 is None
 
-    assert result is not None
-    assert result.status == PaymentStatus.WRONG_AMOUNT
-    assert result.step_resolved_by == 1
-    assert "1500" in result.notes
+    # Full pipeline: Step 2 also misses (wrong amount), Step 3 called
+    cfg = make_cfg_mock([PROP_LINKS_LANE])
+    results = match_properties(txns, cfg)
+
+    assert len(results) == 1
+    # LLM returned no_match → MISSING
+    assert results[0].status == PaymentStatus.MISSING
+    assert results[0].step_resolved_by == 3
+    mock_llm.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +235,8 @@ def test_m08_category_match_wrong_amount_returns_wrong_amount_not_llm():
 # ---------------------------------------------------------------------------
 
 
-def test_m09_amount_match_no_category_returns_possible_match_step2():
-    """M-09: Correct amount but wrong category → Step 1 misses, Step 2 returns POSSIBLE_MATCH."""
+def test_m09_amount_match_no_category_matched_by_step2():
+    """M-09: Correct amount but wrong category → Step 1 misses, Step 2 returns PAID_ON_TIME."""
     txns = load_txn_fixture("amount_no_category.json")
     assert txns[0]["category"] == "Transfer"
 
@@ -218,12 +244,12 @@ def test_m09_amount_match_no_category_returns_possible_match_step2():
     s1 = _step1_category_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
     assert s1 is None
 
-    # Step 2 should match
+    # Step 2 should match — now returns PAID_ON_TIME (not POSSIBLE_MATCH)
     s2 = _step2_amount_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
     assert s2 is not None
-    assert s2.status == PaymentStatus.POSSIBLE_MATCH
+    assert s2.status == PaymentStatus.PAID_ON_TIME
     assert s2.step_resolved_by == 2
-    assert "MANUAL REVIEW" in s2.notes
+    assert "category" in s2.notes.lower()  # notes mention the category issue
 
 
 # ---------------------------------------------------------------------------

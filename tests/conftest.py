@@ -89,13 +89,15 @@ def make_cfg_mock(properties: list[PropertyConfig] | None = None) -> MagicMock:
     cfg.properties = properties if properties is not None else list(ALL_PROPS)
     cfg.ollama_endpoint = "http://localhost:11434"
     cfg.ollama_model = "qwen3:8b"
+    cfg.anthropic_api_key = ""
+    cfg.anthropic_model = "claude-haiku-4-5-20251001"
     cfg.prompts = {
         "rent_match": (
             "Evaluate: property={{property_name}} tenant={{merchant_name}} "
             "rent={{expected_rent}} due={{due_day}} grace={{grace_period_days}} "
+            "category={{category_label}} account={{account}} "
             "transactions={{transactions_json}}"
         ),
-        "payment_summary": "Summary: date={{check_date}} results={{results_json}}",
     }
     cfg.email_subject_prefix = "[Agent - Rent Check]"
     return cfg

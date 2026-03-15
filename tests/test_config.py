@@ -108,7 +108,6 @@ def test_load_config_valid_returns_appconfig(config_env):
     assert cfg.properties[0].expected_rent == 1500.0
     assert cfg.headless is True
     assert "rent_match" in cfg.prompts
-    assert "payment_summary" in cfg.prompts
 
 
 def test_load_config_env_path_override_works(tmp_path, monkeypatch):
@@ -266,7 +265,7 @@ def test_load_config_headless_defaults_to_true(config_env):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("missing_prompt", ["rent_match", "payment_summary"])
+@pytest.mark.parametrize("missing_prompt", ["rent_match"])
 def test_load_config_missing_prompt_raises(config_env, missing_prompt):
     """A missing required prompt file raises ConfigError."""
     (config_env / "prompts" / f"{missing_prompt}.md").unlink()

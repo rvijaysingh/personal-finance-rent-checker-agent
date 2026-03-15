@@ -66,6 +66,48 @@ def test_r01_completed_email_failed_detected_as_already_run(tmp_path):
     assert status == "completed_email_failed"
 
 
+def test_r01_complete_status_detected_as_already_run(tmp_path):
+    """R-01: new 'complete' status (canonical post-redesign) → already_run returns True."""
+    log_path = tmp_path / "run_history.json"
+    records = [
+        {
+            "run_date": "2026-03-01T10:00:00",
+            "check_month": "2026-03",
+            "overall_status": "complete",
+            "email_sent": True,
+            "errors": [],
+            "property_results": [],
+        }
+    ]
+    _write_history(log_path, records)
+
+    already_run, status = _check_already_run(log_path, date(2026, 3, 15))
+
+    assert already_run is True
+    assert status == "complete"
+
+
+def test_r01_review_needed_status_detected_as_already_run(tmp_path):
+    """R-01: 'review_needed' status → run completed (LLM found candidates); blocks re-run."""
+    log_path = tmp_path / "run_history.json"
+    records = [
+        {
+            "run_date": "2026-03-10T09:00:00",
+            "check_month": "2026-03",
+            "overall_status": "review_needed",
+            "email_sent": True,
+            "errors": [],
+            "property_results": [],
+        }
+    ]
+    _write_history(log_path, records)
+
+    already_run, status = _check_already_run(log_path, date(2026, 3, 15))
+
+    assert already_run is True
+    assert status == "review_needed"
+
+
 def test_r01_late_payment_detected_as_already_run(tmp_path):
     """R-01: 'late_payment' status → _check_already_run returns (True, 'late_payment').
 

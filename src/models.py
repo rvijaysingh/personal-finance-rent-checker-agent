@@ -17,11 +17,8 @@ class PaymentStatus(Enum):
 
     PAID_ON_TIME = "paid_on_time"
     PAID_LATE = "paid_late"
-    WRONG_AMOUNT = "wrong_amount"
-    POSSIBLE_MATCH = "possible_match"        # Step 2 result — needs manual review
-    LLM_SUGGESTED = "llm_suggested"          # Step 3 result — needs manual review
-    MISSING = "missing"                      # LLM found nothing
-    LLM_SKIPPED_MISSING = "llm_skipped_missing"  # Step 3 unavailable (Ollama down)
+    REVIEW_NEEDED = "review_needed"  # Step 3: LLM found a likely match — human should verify
+    MISSING = "missing"              # No match found, or LLM unavailable
 
 
 class TransactionRecord(TypedDict):
@@ -58,5 +55,5 @@ class PropertyResult:
     property_name: str
     status: PaymentStatus
     matched_transaction: TransactionRecord | None
-    notes: str                # human-readable context for email
+    notes: str                # human-readable context for email; for REVIEW_NEEDED includes LLM rationale
     step_resolved_by: int | None  # 1, 2, 3, or None if unresolved

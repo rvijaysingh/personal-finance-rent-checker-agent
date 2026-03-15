@@ -53,6 +53,10 @@ class AppConfig:
     ollama_endpoint: str
     ollama_model: str
 
+    # Anthropic API settings — from .env.json (optional)
+    anthropic_api_key: str      # empty string if not configured
+    anthropic_model: str        # default "claude-haiku-4-5-20251001"
+
     # Property definitions — from agent_config.json
     properties: list[PropertyConfig]
 
@@ -168,7 +172,7 @@ def _load_prompts() -> dict[str, str]:
         prompts[md_file.stem] = md_file.read_text(encoding="utf-8")
         logger.debug("Loaded prompt template: %s", md_file.name)
 
-    for required in ("rent_match", "payment_summary"):
+    for required in ("rent_match",):
         if required not in prompts:
             raise ConfigError(
                 f"missing or invalid field: required prompt '{required}.md' "
@@ -231,6 +235,10 @@ def _build_and_validate(
         )
     ollama_model = _req_str(env, "ollama_model", ".env.json")
 
+    # Anthropic settings — optional
+    anthropic_api_key = env.get("anthropic_api_key_rent_checker", "")
+    anthropic_model = env.get("anthropic_model", "claude-haiku-4-5-20251001")
+
     # Property definitions — from agent_config.json
     raw_props = _req(agent, "properties", "agent_config")
     if not isinstance(raw_props, list) or len(raw_props) == 0:
@@ -270,6 +278,8 @@ def _build_and_validate(
         browser_profile_path=Path(browser_profile_str),
         ollama_endpoint=ollama_endpoint,
         ollama_model=ollama_model,
+        anthropic_api_key=anthropic_api_key,
+        anthropic_model=anthropic_model,
         properties=properties,
         headless=headless,
         early_payment_days=early_payment_days,
@@ -350,6 +360,8 @@ if __name__ == "__main__":
     print(f"  Gmail recipient:  {cfg.gmail_recipient}")
     print(f"  Browser profile:  {cfg.browser_profile_path}")
     print(f"  Ollama:           {cfg.ollama_endpoint} / {cfg.ollama_model}")
+    print(f"  Anthropic key:    {'***' if cfg.anthropic_api_key else '(not configured)'}")
+    print(f"  Anthropic model:  {cfg.anthropic_model}")
     print(f"  Headless:         {cfg.headless}")
     print(f"  Early pay days:   {cfg.early_payment_days}")
     print(f"  Email prefix:     {cfg.email_subject_prefix}")

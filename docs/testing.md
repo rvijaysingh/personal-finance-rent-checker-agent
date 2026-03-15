@@ -36,11 +36,11 @@ dependencies that must be mocked: Ollama (mock `_call_ollama` and
 | M-02 | 1 of 3 paid, 2 missing | 1 matching transaction, 2 properties unresolvable | 1 `PAID_ON_TIME`, 2 `MISSING`, LLM called for unresolved 2 |
 | M-03 | Zero transactions in current month | Empty transaction list | All `MISSING`, no crash, LLM not called (no candidates) |
 | M-04 | Duplicate Zelle: same category, same amount twice | 2 transactions with identical category and amount | First transaction used; notes contain `"WARNING"` about duplicate |
-| M-05 | Two transactions sum to expected rent, neither matches alone | 2 transactions each at 50% of expected rent | Steps 1 and 2 return None for each individually; Step 3 called; LLM may flag as split |
+| M-05 | Two transactions sum to expected rent, neither matches alone | 2 transactions each at 50% of expected rent | Steps 1 and 2 return None for each individually; Step 3 called; LLM returns `REVIEW_NEEDED` |
 | M-06 | Payment dated Feb 28 in a March run (early payment window) | Transaction with `date=2026-02-28`, correct category | Step 1 matches; status `PAID_ON_TIME` (Feb 28 is before March 6 deadline) |
 | M-07 | Payment dated March 7 with 5-day grace period | Transaction with `date=2026-03-07`, due_day=1, grace=5 (deadline=March 6) | Step 1 matches; status `PAID_LATE` |
-| M-08 | Category correct, amount wrong ($1,500 vs $2,950) | Transaction with correct category label but wrong amount | Step 1: status `WRONG_AMOUNT`, `step_resolved_by=1` (does not fall through to LLM) |
-| M-09 | Amount correct ($2,950), category wrong ("Transfer") | Transaction with correct amount but no category match | Step 1: no match. Step 2: `POSSIBLE_MATCH`, `step_resolved_by=2` |
+| M-08 | Category correct, amount wrong ($1,500 vs $2,950) | Transaction with correct category label but wrong amount | Step 1 returns None (falls through); pipeline reaches Step 3; LLM returns no match → `MISSING`, `step_resolved_by=3` |
+| M-09 | Amount correct ($2,950), category wrong ("Transfer") | Transaction with correct amount but no category match | Step 1: no match. Step 2: `PAID_ON_TIME`, `step_resolved_by=2`; notes mention category was wrong |
 | M-10 | Transaction claimed by Step 1 for property A; property B needs Step 3 | 1 transaction matching A by category; B has no candidates | A: `PAID_ON_TIME` (step 1). B: `MISSING` (step 3, no candidates because A's txn excluded). LLM not called. |
 | M-11 | Category label has leading/trailing whitespace in transaction data | Transaction with `category="  Rental Income (Links Lane)  "` | Step 1 strips whitespace; still matches; status `PAID_ON_TIME` |
 
@@ -48,8 +48,8 @@ dependencies that must be mocked: Ollama (mock `_call_ollama` and
 
 | ID | Scenario | Input | Expected |
 |----|----------|-------|----------|
-| L-01 | Ollama returns valid JSON | Mock returns `{"match_found": true, "transaction_indices": [0], ...}` | `LLM_SUGGESTED`, `matched_transaction` set |
-| L-02 | Ollama unreachable for Step 3 and email | `_check_ollama_reachable` returns False; properties need Step 3 | Deterministic matches returned normally; unresolved → `LLM_SKIPPED_MISSING`; email uses Python template |
+| L-01 | Ollama returns valid JSON | Mock returns `{"status": "likely_match", "matched_transaction_index": 0, ...}` | `REVIEW_NEEDED`, `matched_transaction` set |
+| L-02 | Ollama unreachable for Step 3 and email | `_check_ollama_reachable` returns False; properties need Step 3 | Deterministic matches returned normally; unresolved → `MISSING` (with Ollama unreachable note); email uses Python template |
 | L-03 | Ollama returns markdown-fenced JSON | Mock returns ` ```json\n{...}\n``` ` | `_parse_json_response` strips fences and returns dict |
 | L-04 | Ollama returns preamble prose + JSON | Mock returns `"Here is my analysis:\n{...}"` | `_parse_json_response` extracts JSON block via regex |
 | L-05 | Ollama returns malformed JSON | Mock returns `"not json at all"` | `_parse_json_response` returns None; property marked `MISSING` with raw response in notes |

@@ -73,6 +73,8 @@ def make_config(tolerance: float = 2.0, ollama_available: bool = True) -> MagicM
     cfg.amount_tolerance_percent = tolerance
     cfg.ollama_endpoint = "http://localhost:11434"
     cfg.ollama_model = "qwen3:8b"
+    cfg.anthropic_api_key = ""
+    cfg.anthropic_model = "claude-haiku-4-5-20251001"
     cfg.prompts = {"rent_match": "Template: {{property_name}} {{transactions_json}}"}
     return cfg
 
@@ -172,15 +174,12 @@ def test_step1_category_match_late_returns_paid_late():
     assert result.step_resolved_by == 1
 
 
-def test_step1_category_match_wrong_amount_returns_wrong_amount():
+def test_step1_category_match_wrong_amount_returns_none():
     prop = make_prop(rent=1500.0)
-    txn = make_txn(amount=1000.0)  # far outside 2% tolerance
+    txn = make_txn(amount=1000.0)  # far outside 2% tolerance — falls through to Step 2/3
     result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
-    assert result is not None
-    assert result.status == PaymentStatus.WRONG_AMOUNT
-    assert result.step_resolved_by == 1
-    assert "1000" in result.notes
+    assert result is None
 
 
 def test_step1_category_match_no_match_returns_none():
@@ -241,15 +240,15 @@ def test_step1_category_match_amount_within_tolerance_returns_paid_on_time():
 # ---------------------------------------------------------------------------
 
 
-def test_step2_amount_match_returns_possible_match():
+def test_step2_amount_match_returns_paid_on_time():
     prop = make_prop(rent=1500.0)
     txn = make_txn(category="Uncategorized", amount=1500.0)
     result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
-    assert result.status == PaymentStatus.POSSIBLE_MATCH
+    assert result.status == PaymentStatus.PAID_ON_TIME
     assert result.step_resolved_by == 2
-    assert "MANUAL REVIEW" in result.notes
+    assert "category" in result.notes.lower()
 
 
 def test_step2_amount_match_no_match_returns_none():
@@ -289,7 +288,7 @@ def test_step2_amount_match_account_with_suffix_returns_match():
     result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
-    assert result.status == PaymentStatus.POSSIBLE_MATCH
+    assert result.status in (PaymentStatus.PAID_ON_TIME, PaymentStatus.PAID_LATE)
 
 
 # ---------------------------------------------------------------------------
@@ -298,16 +297,23 @@ def test_step2_amount_match_account_with_suffix_returns_match():
 
 
 def _make_ollama_response(match_found: bool, index: int = 0) -> str:
+    if match_found:
+        return json.dumps({
+            "status": "likely_match",
+            "matched_transaction_index": index,
+            "confidence": "medium",
+            "rationale": "Test rationale.",
+        })
     return json.dumps({
-        "match_found": match_found,
-        "transaction_indices": [index] if match_found else [],
-        "confidence": "medium",
-        "reasoning": "Test reasoning.",
+        "status": "no_match_found",
+        "matched_transaction_index": None,
+        "confidence": "low",
+        "rationale": "No match found.",
     })
 
 
 @patch("src.transaction_matcher._call_ollama")
-def test_step3_llm_finds_match_returns_llm_suggested(mock_ollama):
+def test_step3_llm_finds_match_returns_review_needed(mock_ollama):
     mock_ollama.return_value = _make_ollama_response(match_found=True, index=0)
     cfg = make_config()
     prop = make_prop()
@@ -317,10 +323,10 @@ def test_step3_llm_finds_match_returns_llm_suggested(mock_ollama):
 
     result = _step3_llm_match(prop, [txn], cfg, CHECK_MONTH)
 
-    assert result.status == PaymentStatus.LLM_SUGGESTED
+    assert result.status == PaymentStatus.REVIEW_NEEDED
     assert result.matched_transaction == txn
     assert result.step_resolved_by == 3
-    assert "Test reasoning." in result.notes
+    assert "Test rationale." in result.notes
 
 
 @patch("src.transaction_matcher._call_ollama")
@@ -339,7 +345,7 @@ def test_step3_llm_finds_nothing_returns_missing(mock_ollama):
 
 
 @patch("src.transaction_matcher._call_ollama")
-def test_step3_ollama_unavailable_returns_llm_skipped_missing(mock_ollama):
+def test_step3_ollama_unavailable_returns_missing(mock_ollama):
     mock_ollama.side_effect = OllamaUnavailableError("connection refused")
     cfg = make_config()
     prop = make_prop()
@@ -349,8 +355,8 @@ def test_step3_ollama_unavailable_returns_llm_skipped_missing(mock_ollama):
 
     result = _step3_llm_match(prop, [txn], cfg, CHECK_MONTH)
 
-    assert result.status == PaymentStatus.LLM_SKIPPED_MISSING
-    assert "Ollama unreachable" in result.notes
+    assert result.status == PaymentStatus.MISSING
+    assert "unreachable" in result.notes.lower()
 
 
 @patch("src.transaction_matcher._call_ollama")
@@ -384,22 +390,23 @@ def test_step3_no_candidates_returns_missing_without_calling_llm(mock_ollama):
 
 
 @patch("src.transaction_matcher._call_ollama")
-def test_step3_account_with_suffix_includes_candidate(mock_ollama):
-    """Account substring match ensures suffixed Monarch account names reach the LLM."""
+def test_step3_all_positive_transactions_offered_to_llm(mock_ollama):
+    """Step 3 sends all positive-amount transactions to LLM regardless of account."""
     mock_ollama.return_value = _make_ollama_response(match_found=True, index=0)
     cfg = make_config()
-    prop = make_prop(account="Total Checking (First Republic)")
+    prop = make_prop()
+    # Transaction from a completely different account — should still reach LLM
     txn = make_txn(
         category="Uncategorized",
         amount=1500.0,
-        account="Total Checking (First Republic) (...1829)",
+        account="Completely Different Bank Account",
     )
 
     from src.transaction_matcher import _step3_llm_match
 
     result = _step3_llm_match(prop, [txn], cfg, CHECK_MONTH)
 
-    assert result.status == PaymentStatus.LLM_SUGGESTED
+    assert result.status == PaymentStatus.REVIEW_NEEDED
     mock_ollama.assert_called_once()
 
 
@@ -466,7 +473,7 @@ def test_match_properties_all_step1_returns_paid_on_time(mock_ollama):
 
 @patch("src.transaction_matcher._call_ollama")
 def test_match_properties_step2_fallback_used_when_step1_fails(mock_ollama):
-    """Property missing category label but correct amount → POSSIBLE_MATCH."""
+    """Property missing category label but correct amount → PAID_ON_TIME from Step 2."""
     prop = make_prop(rent=1500.0)
     txn = make_txn(category="Transfer", amount=1500.0)
     cfg = make_config()
@@ -474,7 +481,7 @@ def test_match_properties_step2_fallback_used_when_step1_fails(mock_ollama):
 
     results = match_properties([txn], cfg)
 
-    assert results[0].status == PaymentStatus.POSSIBLE_MATCH
+    assert results[0].status == PaymentStatus.PAID_ON_TIME
     assert results[0].step_resolved_by == 2
     mock_ollama.assert_not_called()  # LLM not needed when Step 2 resolves
 
