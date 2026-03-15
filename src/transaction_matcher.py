@@ -125,6 +125,21 @@ def _match_steps_1_and_2(
     check_month: date,
 ) -> PropertyResult | None:
     """Run Steps 1 and 2 for a single property; return None if neither matches."""
+    # Account-filter diagnostic — logged before any step so we can see whether
+    # Monarch is appending suffixes (e.g. "...1829") that break exact matching.
+    acct_filtered = [t for t in transactions if prop.account in t["account"]]
+    logger.debug(
+        "Account filter [%s]: %d total transaction(s) → %d match account %r",
+        prop.name, len(transactions), len(acct_filtered), prop.account,
+    )
+    if not acct_filtered and transactions:
+        unique_accts = sorted({t["account"] for t in transactions})[:5]
+        logger.debug(
+            "Account filter [%s]: ZERO matches — first 5 account names in "
+            "transaction set: %s",
+            prop.name, unique_accts,
+        )
+
     result = _step1_category_match(prop, transactions, check_month)
     if result is not None:
         return result
@@ -173,7 +188,7 @@ def _step1_category_match(
     matches = [
         t for t in transactions
         if t["category"].strip() == prop.category_label
-        and t["account"] == prop.account
+        and prop.account in t["account"]
     ]
 
     if not matches:
@@ -252,7 +267,7 @@ def _step2_amount_match(
         t for t in transactions
         if _amount_matches(t["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT)
         and t["amount"] > 0  # income only
-        and t["account"] == prop.account
+        and prop.account in t["account"]
     ]
 
     if not matches:
@@ -310,7 +325,7 @@ def _step3_llm_match(
     # mortgage payments) from being sent to the LLM as rent candidates.
     candidates = [
         t for t in transactions
-        if t["amount"] > 0 and t["account"] == prop.account
+        if t["amount"] > 0 and prop.account in t["account"]
     ]
 
     if not candidates:

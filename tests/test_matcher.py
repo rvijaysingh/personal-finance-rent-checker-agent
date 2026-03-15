@@ -199,6 +199,23 @@ def test_step1_category_match_wrong_account_returns_none():
     assert result is None
 
 
+def test_step1_category_match_account_with_suffix_returns_match():
+    """Config account 'Total Checking (First Republic)' matches Monarch returning
+    'Total Checking (First Republic) (...1829)' — substring match must pass."""
+    prop = make_prop(
+        account="Total Checking (First Republic)",
+        category="Rental Income (505)",
+    )
+    txn = make_txn(
+        account="Total Checking (First Republic) (...1829)",
+        category="Rental Income (505)",
+    )
+    result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
+
+    assert result is not None
+    assert result.status == PaymentStatus.PAID_ON_TIME
+
+
 def test_step1_category_match_multiple_transactions_warns_in_notes():
     prop = make_prop()
     txn1 = make_txn(txn_date=date(2026, 3, 1))
@@ -259,6 +276,20 @@ def test_step2_amount_match_multiple_results_notes_ambiguity():
 
     assert result is not None
     assert "2" in result.notes  # "2 amount-matching transactions"
+
+
+def test_step2_amount_match_account_with_suffix_returns_match():
+    """Config account substring matches Monarch account with appended suffix."""
+    prop = make_prop(rent=1500.0, account="Total Checking (First Republic)")
+    txn = make_txn(
+        category="Uncategorized",
+        amount=1500.0,
+        account="Total Checking (First Republic) (...1829)",
+    )
+    result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
+
+    assert result is not None
+    assert result.status == PaymentStatus.POSSIBLE_MATCH
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +381,26 @@ def test_step3_no_candidates_returns_missing_without_calling_llm(mock_ollama):
 
     assert result.status == PaymentStatus.MISSING
     mock_ollama.assert_not_called()
+
+
+@patch("src.transaction_matcher._call_ollama")
+def test_step3_account_with_suffix_includes_candidate(mock_ollama):
+    """Account substring match ensures suffixed Monarch account names reach the LLM."""
+    mock_ollama.return_value = _make_ollama_response(match_found=True, index=0)
+    cfg = make_config()
+    prop = make_prop(account="Total Checking (First Republic)")
+    txn = make_txn(
+        category="Uncategorized",
+        amount=1500.0,
+        account="Total Checking (First Republic) (...1829)",
+    )
+
+    from src.transaction_matcher import _step3_llm_match
+
+    result = _step3_llm_match(prop, [txn], cfg, CHECK_MONTH)
+
+    assert result.status == PaymentStatus.LLM_SUGGESTED
+    mock_ollama.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
