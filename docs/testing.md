@@ -39,30 +39,36 @@ dependencies that must be mocked: Ollama (mock `_call_ollama` and
 | M-05 | Two transactions sum to expected rent, neither matches alone | 2 transactions each at 50% of expected rent | Steps 1 and 2 return None for each individually; Step 3 called; LLM returns `REVIEW_NEEDED` |
 | M-06 | Payment dated Feb 28 in a March run (early payment window) | Transaction with `date=2026-02-28`, correct category | Step 1 matches; status `PAID_ON_TIME` (Feb 28 is before March 6 deadline) |
 | M-07 | Payment dated March 7 with 5-day grace period | Transaction with `date=2026-03-07`, due_day=1, grace=5 (deadline=March 6) | Step 1 matches; status `PAID_LATE` |
-| M-08 | Category correct, amount wrong ($1,500 vs $2,950) | Transaction with correct category label but wrong amount | Step 1 returns None (falls through); pipeline reaches Step 3; LLM returns no match → `MISSING`, `step_resolved_by=3` |
-| M-09 | Amount correct ($2,950), category wrong ("Transfer") | Transaction with correct amount but no category match | Step 1: no match. Step 2: `PAID_ON_TIME`, `step_resolved_by=2`; notes mention category was wrong |
+| M-08 | Category correct, amount wrong ($1,500 vs $2,950) | Transaction with correct category label but wrong amount | Step 1 finds category match; amount outside tolerance → `REVIEW_NEEDED`, `step_resolved_by=1`; rationale mentions amounts and tolerance; LLM not called |
+| M-09 | Amount correct ($2,950), category wrong ("Transfer") | Transaction with correct amount but no category match | Step 1: no match. Step 2: `REVIEW_NEEDED`, `step_resolved_by=2`; notes name the wrong category and expected category |
 | M-10 | Transaction claimed by Step 1 for property A; property B needs Step 3 | 1 transaction matching A by category; B has no candidates | A: `PAID_ON_TIME` (step 1). B: `MISSING` (step 3, no candidates because A's txn excluded). LLM not called. |
 | M-11 | Category label has leading/trailing whitespace in transaction data | Transaction with `category="  Rental Income (Links Lane)  "` | Step 1 strips whitespace; still matches; status `PAID_ON_TIME` |
+| T-NEW-1 | Step 1 wrong-amount rationale includes amounts and diff | `category_mismatch.json` ($1,500 vs $2,950 expected) | Notes contain `"1,500.00"`, `"2,950.00"`, `"tolerance"` |
+| T-NEW-2 | Step 1 amount within tolerance is auto-accepted | Transaction at $2,951 (0.03% over $2,950) with correct category | `PAID_ON_TIME` — not flagged as REVIEW_NEEDED |
+| T-NEW-3 | Step 2 rationale names expected and received category | `amount_no_category.json` ($2,950, category "Transfer") | Notes contain `"Transfer"` and `"Rental Income (Links Lane)"` |
+| T-NEW-4 | Step 1 wrong-amount stops pipeline at Step 1 | Category match + wrong amount | `step_resolved_by=1`; Step 2 not reached |
+| T-NEW-5 | Step 1 wrong-amount → LLM not called | Category match + wrong amount | `REVIEW_NEEDED`; `_call_ollama` never invoked |
+| T-NEW-6 | Full pipeline Step 2 review_needed | Step 1 misses; Step 2 amount match | `REVIEW_NEEDED`, `step_resolved_by=2` via `match_properties` |
 
 ### LLM INTEGRATION (`transaction_matcher.py`, `notifier.py`)
 
 | ID | Scenario | Input | Expected |
 |----|----------|-------|----------|
 | L-01 | Ollama returns valid JSON | Mock returns `{"status": "likely_match", "matched_transaction_index": 0, ...}` | `REVIEW_NEEDED`, `matched_transaction` set |
-| L-02 | Ollama unreachable for Step 3 and email | `_check_ollama_reachable` returns False; properties need Step 3 | Deterministic matches returned normally; unresolved → `MISSING` (with Ollama unreachable note); email uses Python template |
+| L-02 | Ollama unreachable for Step 3 | `_check_ollama_reachable` returns False; properties need Step 3 | Deterministic matches returned normally; unresolved → `MISSING` with Ollama unreachable note |
 | L-03 | Ollama returns markdown-fenced JSON | Mock returns ` ```json\n{...}\n``` ` | `_parse_json_response` strips fences and returns dict |
 | L-04 | Ollama returns preamble prose + JSON | Mock returns `"Here is my analysis:\n{...}"` | `_parse_json_response` extracts JSON block via regex |
 | L-05 | Ollama returns malformed JSON | Mock returns `"not json at all"` | `_parse_json_response` returns None; property marked `MISSING` with raw response in notes |
-| L-06 | Ollama returns empty string | Mock returns `""` | `_parse_json_response` returns None → `MISSING`; in notifier, raises `ValueError` → fallback template |
+| L-06 | Ollama returns empty string | Mock returns `""` | `_parse_json_response` returns None → `MISSING` |
+| L-07 | Anthropic primary, Ollama fallback | API key set; Anthropic succeeds | `_call_anthropic` called; Ollama skipped |
 
 ### NOTIFICATION (`notifier.py`)
 
 | ID | Scenario | Input | Expected |
 |----|----------|-------|----------|
-| N-01 | All paid on time | 3 `PropertyResult` with `PAID_ON_TIME` | Subject contains "All Received"; body contains amounts and dates |
+| N-01 | All paid on time | 3 `PropertyResult` with `PAID_ON_TIME` | Subject contains "All Received"; body contains amounts and dates; email sent |
 | N-02 | Mixed results (paid + missing + flagged) | Mixed `PropertyResult` statuses | Subject contains "ACTION NEEDED"; email sent successfully |
 | N-03 | SMTP failure | `smtplib.SMTP` raises `SMTPException` | `send_notification` returns `False`; no exception propagated |
-| N-04 | LLM unavailable for email body | `_call_ollama_for_summary` raises connection error | Fallback body used; contains "LLM review…unavailable"; email still sent (returns `True`) |
 
 ### CONFIG LOADING (`config_loader.py`)
 

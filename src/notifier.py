@@ -316,7 +316,13 @@ def _fallback_body(
         else:
             txn_detail = ""
 
-        parts.append(f"<li>{name_html}: {status_html}{txn_detail}</li>")
+        li_content = f"{name_html}: {status_html}{txn_detail}"
+        if r.status in REVIEW_STATUSES and r.notes:
+            li_content += (
+                f'<br><em style="font-size:0.9em; margin-left:1.5em; color:#555;">'
+                f'{r.notes}</em>'
+            )
+        parts.append(f"<li>{li_content}</li>")
 
     parts.append("</ul>")
     parts.append("<hr>")

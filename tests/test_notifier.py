@@ -408,3 +408,22 @@ def test_fallback_body_date_and_amount_format():
     assert "Deadline: 3/6" in body
     # ISO date format must NOT appear
     assert "2026-03-12" not in body
+
+
+def test_fallback_body_review_needed_shows_rationale_italic():
+    """REVIEW_NEEDED result with notes → rationale shown as indented italic below status line."""
+    results = [_review_result("Calmar", 3100.00)]
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
+    # Notes/rationale appears in an <em> tag
+    assert "<em" in body
+    assert "LLM-suggested match" in body
+    assert "HUMAN REVIEW REQUIRED" in body
+
+
+def test_fallback_body_paid_on_time_no_rationale():
+    """PAID_ON_TIME result has no <em> rationale line in the body."""
+    results = [_paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)")]
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
+    assert "<em" not in body

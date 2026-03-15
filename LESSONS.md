@@ -85,6 +85,30 @@ consecutive scroll attempts.
 
 ## Transaction Matcher
 
+### Matching confidence principle: only both signals = auto-accept
+
+**Rule** — A payment is auto-accepted (`PAID_ON_TIME` or `PAID_LATE`) only when
+**both** the category label and the amount match within tolerance. Any single
+signal — correct category but wrong amount, correct amount but wrong category,
+or LLM-identified — produces `REVIEW_NEEDED` with a rationale, never auto-acceptance.
+
+**Why** — This prevents silent acceptance of:
+- Tenants who short-pay or overpay (category matches but amount differs)
+- Miscategorised deposits where Monarch puts the wrong label (amount matches but
+  category is "Transfer" or similar)
+- LLM suggestions that are plausible but wrong
+
+**Step-level implications:**
+- Step 1: category match + amount outside tolerance → `REVIEW_NEEDED` from Step 1.
+  Pipeline stops here — Step 2 is NOT reached for that property.
+- Step 2: amount match + wrong category → `REVIEW_NEEDED`. Only reached when
+  Step 1 found NO category match at all.
+- Step 3: any LLM suggestion → `REVIEW_NEEDED`. Never auto-accepted.
+
+**Email format** — `REVIEW_NEEDED` entries show the status label highlighted in
+orange, followed by an italic rationale line beneath the property line explaining
+what partial signal was found and why human review is needed.
+
 ### Pagination: 25 transactions per page, scroll to load more
 
 **Confirmed page size** — Monarch's GraphQL `allTransactions` query returns

@@ -174,12 +174,16 @@ def test_step1_category_match_late_returns_paid_late():
     assert result.step_resolved_by == 1
 
 
-def test_step1_category_match_wrong_amount_returns_none():
+def test_step1_category_match_wrong_amount_returns_review_needed():
     prop = make_prop(rent=1500.0)
-    txn = make_txn(amount=1000.0)  # far outside 2% tolerance — falls through to Step 2/3
+    txn = make_txn(amount=1000.0)  # far outside 2% tolerance → partial match flagged
     result = _step1_category_match(prop, [txn], check_month=CHECK_MONTH)
 
-    assert result is None
+    assert result is not None
+    assert result.status == PaymentStatus.REVIEW_NEEDED
+    assert result.step_resolved_by == 1
+    assert "amount" in result.notes.lower()
+    assert "tolerance" in result.notes.lower()
 
 
 def test_step1_category_match_no_match_returns_none():
@@ -240,13 +244,13 @@ def test_step1_category_match_amount_within_tolerance_returns_paid_on_time():
 # ---------------------------------------------------------------------------
 
 
-def test_step2_amount_match_returns_paid_on_time():
+def test_step2_amount_match_returns_review_needed():
     prop = make_prop(rent=1500.0)
     txn = make_txn(category="Uncategorized", amount=1500.0)
     result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
-    assert result.status == PaymentStatus.PAID_ON_TIME
+    assert result.status == PaymentStatus.REVIEW_NEEDED
     assert result.step_resolved_by == 2
     assert "category" in result.notes.lower()
 
@@ -288,7 +292,7 @@ def test_step2_amount_match_account_with_suffix_returns_match():
     result = _step2_amount_match(prop, [txn], check_month=CHECK_MONTH)
 
     assert result is not None
-    assert result.status in (PaymentStatus.PAID_ON_TIME, PaymentStatus.PAID_LATE)
+    assert result.status == PaymentStatus.REVIEW_NEEDED
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +477,7 @@ def test_match_properties_all_step1_returns_paid_on_time(mock_ollama):
 
 @patch("src.transaction_matcher._call_ollama")
 def test_match_properties_step2_fallback_used_when_step1_fails(mock_ollama):
-    """Property missing category label but correct amount → PAID_ON_TIME from Step 2."""
+    """Property missing category label but correct amount → REVIEW_NEEDED from Step 2."""
     prop = make_prop(rent=1500.0)
     txn = make_txn(category="Transfer", amount=1500.0)
     cfg = make_config()
@@ -481,7 +485,7 @@ def test_match_properties_step2_fallback_used_when_step1_fails(mock_ollama):
 
     results = match_properties([txn], cfg)
 
-    assert results[0].status == PaymentStatus.PAID_ON_TIME
+    assert results[0].status == PaymentStatus.REVIEW_NEEDED
     assert results[0].step_resolved_by == 2
     mock_ollama.assert_not_called()  # LLM not needed when Step 2 resolves
 

@@ -207,27 +207,32 @@ def test_m07_late_payment_after_grace_flagged():
 # ---------------------------------------------------------------------------
 
 
-@patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
-@patch("src.transaction_matcher._call_ollama")
-def test_m08_category_match_wrong_amount_falls_through_to_step3(mock_llm, mock_health):
-    """M-08: Category matches but amount wrong → Step 1 returns None; pipeline proceeds to Step 3."""
-    mock_llm.return_value = _llm_no_match()
+def test_m08_category_match_wrong_amount_returns_review_needed_from_step1():
+    """M-08: Category matches but amount wrong → Step 1 returns REVIEW_NEEDED; pipeline stops there.
+
+    PROP_LINKS_LANE expects $2950; category_mismatch.json has $1500 with correct
+    category label. Under the new confidence principle, any category match resolves
+    at Step 1 — if amount is outside tolerance, result is REVIEW_NEEDED not MISSING.
+    """
     txns = load_txn_fixture("category_mismatch.json")
     assert txns[0]["amount"] == 1500.00
+    assert txns[0]["category"] == "Rental Income (Links Lane)"
 
-    # Step 1 should no longer return WRONG_AMOUNT — it falls through
+    # Step 1 finds category match; amount $1500 ≠ $2950 → REVIEW_NEEDED
     result_s1 = _step1_category_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
-    assert result_s1 is None
+    assert result_s1 is not None
+    assert result_s1.status == PaymentStatus.REVIEW_NEEDED
+    assert result_s1.step_resolved_by == 1
+    assert "amount" in result_s1.notes.lower()
+    assert "tolerance" in result_s1.notes.lower()
 
-    # Full pipeline: Step 2 also misses (wrong amount), Step 3 called
+    # Full pipeline: Step 1 REVIEW_NEEDED resolves the property → LLM not called
     cfg = make_cfg_mock([PROP_LINKS_LANE])
     results = match_properties(txns, cfg)
 
     assert len(results) == 1
-    # LLM returned no_match → MISSING
-    assert results[0].status == PaymentStatus.MISSING
-    assert results[0].step_resolved_by == 3
-    mock_llm.assert_called_once()
+    assert results[0].status == PaymentStatus.REVIEW_NEEDED
+    assert results[0].step_resolved_by == 1
 
 
 # ---------------------------------------------------------------------------
@@ -235,19 +240,19 @@ def test_m08_category_match_wrong_amount_falls_through_to_step3(mock_llm, mock_h
 # ---------------------------------------------------------------------------
 
 
-def test_m09_amount_match_no_category_matched_by_step2():
-    """M-09: Correct amount but wrong category → Step 1 misses, Step 2 returns PAID_ON_TIME."""
+def test_m09_amount_match_no_category_matched_by_step2_review_needed():
+    """M-09: Correct amount but wrong category → Step 1 misses, Step 2 returns REVIEW_NEEDED."""
     txns = load_txn_fixture("amount_no_category.json")
     assert txns[0]["category"] == "Transfer"
 
-    # Step 1 should not match
+    # Step 1 should not match (no category match)
     s1 = _step1_category_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
     assert s1 is None
 
-    # Step 2 should match — now returns PAID_ON_TIME (not POSSIBLE_MATCH)
+    # Step 2 finds amount match but wrong category → REVIEW_NEEDED
     s2 = _step2_amount_match(PROP_LINKS_LANE, txns, CHECK_MONTH)
     assert s2 is not None
-    assert s2.status == PaymentStatus.PAID_ON_TIME
+    assert s2.status == PaymentStatus.REVIEW_NEEDED
     assert s2.step_resolved_by == 2
     assert "category" in s2.notes.lower()  # notes mention the category issue
 
@@ -297,3 +302,92 @@ def test_m11_category_with_extra_whitespace_stripped_and_matched():
     assert result is not None
     assert result.status in (PaymentStatus.PAID_ON_TIME, PaymentStatus.PAID_LATE)
     assert result.step_resolved_by == 1
+
+
+# ---------------------------------------------------------------------------
+# T-NEW: Confidence-based matching — partial matches → REVIEW_NEEDED
+# ---------------------------------------------------------------------------
+
+
+def test_tnew1_step1_wrong_amount_rationale_mentions_diff():
+    """T-NEW-1: Step 1 wrong-amount rationale includes expected, received, and diff."""
+    prop = PROP_LINKS_LANE  # expected $2950
+    txns = load_txn_fixture("category_mismatch.json")  # $1500, correct category
+
+    result = _step1_category_match(prop, txns, CHECK_MONTH)
+
+    assert result is not None
+    assert result.status == PaymentStatus.REVIEW_NEEDED
+    # Rationale must name the received amount, expected amount, and tolerance
+    assert "1,500.00" in result.notes
+    assert "2,950.00" in result.notes
+    assert "tolerance" in result.notes.lower()
+
+
+def test_tnew2_step1_amount_within_tolerance_is_not_review_needed():
+    """T-NEW-2: Step 1 category + amount within 2% → auto-accepted as PAID_ON_TIME."""
+    prop = PROP_LINKS_LANE  # expected $2950
+    # $2951 is 0.03% over — well within 2%
+    txns = [make_txn(amount=2951.00, category="Rental Income (Links Lane)")]
+
+    result = _step1_category_match(prop, txns, CHECK_MONTH)
+
+    assert result is not None
+    assert result.status == PaymentStatus.PAID_ON_TIME
+
+
+def test_tnew3_step2_wrong_category_rationale_names_expected_category():
+    """T-NEW-3: Step 2 amount match rationale names the expected category and received category."""
+    prop = PROP_LINKS_LANE  # category "Rental Income (Links Lane)"
+    txns = load_txn_fixture("amount_no_category.json")  # category "Transfer", $2950
+
+    result = _step2_amount_match(prop, txns, CHECK_MONTH)
+
+    assert result is not None
+    assert result.status == PaymentStatus.REVIEW_NEEDED
+    assert "Transfer" in result.notes
+    assert "Rental Income (Links Lane)" in result.notes
+
+
+def test_tnew4_step1_wrong_amount_stops_pipeline_no_step2():
+    """T-NEW-4: When Step 1 returns REVIEW_NEEDED, Step 2 is not reached.
+
+    Use a transaction with correct category but wrong amount. The property
+    must not also match by amount (use $1500 vs expected $2950).
+    """
+    prop = PROP_LINKS_LANE  # expected $2950
+    # $1500 with correct category → Step 1 REVIEW_NEEDED
+    txns = load_txn_fixture("category_mismatch.json")
+
+    cfg = make_cfg_mock([PROP_LINKS_LANE])
+    results = match_properties(txns, cfg)
+
+    assert len(results) == 1
+    assert results[0].status == PaymentStatus.REVIEW_NEEDED
+    assert results[0].step_resolved_by == 1  # resolved at Step 1, not Step 2
+
+
+@patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
+@patch("src.transaction_matcher._call_ollama")
+def test_tnew5_step1_wrong_amount_llm_not_called(mock_llm, mock_health):
+    """T-NEW-5: Step 1 REVIEW_NEEDED result → LLM (Step 3) is never called."""
+    txns = load_txn_fixture("category_mismatch.json")  # $1500, correct category for Links Lane
+    cfg = make_cfg_mock([PROP_LINKS_LANE])  # expected $2950
+
+    results = match_properties(txns, cfg)
+
+    assert results[0].status == PaymentStatus.REVIEW_NEEDED
+    mock_llm.assert_not_called()
+
+
+def test_tnew6_step2_amount_match_full_pipeline_review_needed():
+    """T-NEW-6: Full pipeline — Step 1 misses (no category), Step 2 finds amount → REVIEW_NEEDED."""
+    prop = PROP_LINKS_LANE  # expected $2950
+    txns = load_txn_fixture("amount_no_category.json")  # "Transfer" category, $2950
+
+    cfg = make_cfg_mock([PROP_LINKS_LANE])
+    results = match_properties(txns, cfg)
+
+    assert len(results) == 1
+    assert results[0].status == PaymentStatus.REVIEW_NEEDED
+    assert results[0].step_resolved_by == 2

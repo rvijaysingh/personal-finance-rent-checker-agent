@@ -17,6 +17,7 @@
 | R7 | run_history.json corrupted | Low |
 | R8 | Step 2/3 matches wrong account | Low |
 | R9 | LLM returns malformed JSON | Medium |
+| R10 | LLM rationale misleads reviewer | Low |
 
 ---
 
@@ -201,14 +202,36 @@ is marked `MISSING` even if the LLM identified a match.
 
 ---
 
+## R10: LLM Rationale Misleads Reviewer
+
+**Likelihood:** Low — LLM rationale is plausible-sounding but can be wrong.
+
+**What goes wrong:** Step 3 returns `REVIEW_NEEDED` with a confident-sounding
+LLM rationale (e.g., "Amount matches tenant's typical payment pattern"). The
+reviewer trusts the rationale and accepts the match without checking the actual
+transaction, resulting in a missed payment going unnoticed or a wrong transaction
+being logged as rent.
+
+**Mitigations:**
+- All LLM-identified matches are `REVIEW_NEEDED` — they can never be auto-accepted
+  regardless of LLM confidence level. The status hierarchy requires human action.
+- The email labels all `REVIEW_NEEDED` entries with `"HUMAN REVIEW REQUIRED"` and
+  displays the rationale as advisory context, not a conclusion.
+- The rationale for Step 1/2 partial matches is deterministic (computed from exact
+  amounts), so it cannot mislead. Only Step 3 LLM rationale carries this risk.
+- Reviewers should treat LLM rationale as a starting point, not a verdict.
+  The matched transaction details (date, amount, description) are always shown.
+
+---
+
 ## Error Handling Strategy (By Dependency)
 
 | Dependency | Failure mode | System behaviour |
 |-----------|-------------|-----------------|
 | Monarch API | Schema change / no data | `ScraperError` → error email + `run_history: error` |
 | Monarch session | Login redirect | `ScraperError` with re-login instructions |
-| Ollama (Step 3) | Unreachable | `LLM_SKIPPED_MISSING` for unresolved properties |
-| Ollama (email) | Unreachable | Python fallback template; email still sent |
+| Anthropic (Step 3) | Unreachable / key missing | Falls back to Ollama; if Ollama also down → `MISSING` |
+| Ollama (Step 3) | Unreachable | `MISSING` for unresolved properties (if Anthropic also failed) |
 | Gmail SMTP | Delivery failure | `completed_email_failed` + stored results for retry |
 | `run_history.json` | Corrupt / missing | Treat as empty; log warning; proceed |
 | Config files | Missing / invalid | `ConfigError` at startup; no external calls made |

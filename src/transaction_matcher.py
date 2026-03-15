@@ -210,14 +210,28 @@ def _step1_category_match(
     # Use the first (most recent if sorted by date desc) match
     txn = matches[0]
 
-    # Evaluate amount — fall through to Step 2/3 if wrong amount
+    # Evaluate amount — category match but wrong amount → REVIEW_NEEDED with rationale
     if not _amount_matches(txn["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT):
-        logger.debug(
-            "Step 1 [%s]: category match found but amount %.2f does not match "
-            "expected %.2f (tolerance %.1f%%) — falling through to Step 2/3",
-            prop.name, txn["amount"], prop.expected_rent, AMOUNT_TOLERANCE_PCT,
+        abs_diff = abs(txn["amount"] - prop.expected_rent)
+        pct = abs_diff / prop.expected_rent * 100 if prop.expected_rent != 0 else 0
+        sign = "+" if txn["amount"] > prop.expected_rent else "-"
+        rationale = (
+            f"Category matches ({prop.category_label}) but amount "
+            f"${txn['amount']:,.2f} differs from expected "
+            f"${prop.expected_rent:,.2f} by {sign}${abs_diff:,.2f} "
+            f"({pct:.1f}%, exceeds {AMOUNT_TOLERANCE_PCT:.0f}% tolerance)."
         )
-        return None
+        logger.debug(
+            "Step 1 [%s]: category match but amount mismatch → REVIEW_NEEDED. %s",
+            prop.name, rationale,
+        )
+        return PropertyResult(
+            property_name=prop.name,
+            status=PaymentStatus.REVIEW_NEEDED,
+            matched_transaction=txn,
+            notes=f"{duplicate_note}{rationale}",
+            step_resolved_by=1,
+        )
 
     # Evaluate timeliness
     on_time = _is_on_time(txn["date"], prop.due_day, prop.grace_period_days, check_month)
@@ -249,13 +263,14 @@ def _step2_amount_match(
     transactions: list[TransactionRecord],
     check_month: date,
 ) -> PropertyResult | None:
-    """Find transactions whose amount matches expected rent (any category).
+    """Find transactions whose amount matches expected rent when no category match exists.
 
     Scoped to prop.account (same deposit account used by Step 1) so that
     transactions from other accounts (e.g. mortgage payments going out of
     a different account) are never mistaken for incoming rent.
 
-    Returns a PropertyResult flagged for manual review, else None.
+    A pure amount match is a partial signal — the category mismatch means it
+    cannot be auto-accepted. Returns REVIEW_NEEDED with a rationale, or None.
     """
     matches = [
         t for t in transactions
@@ -279,24 +294,17 @@ def _step2_amount_match(
         if len(matches) > 1 else ""
     )
 
-    on_time = _is_on_time(txn["date"], prop.due_day, prop.grace_period_days, check_month)
-    status = PaymentStatus.PAID_ON_TIME if on_time else PaymentStatus.PAID_LATE
-    deadline = _due_deadline(prop.due_day, prop.grace_period_days, check_month)
-    timeliness_note = (
-        f"Received {txn['date']} — on time (deadline {deadline})."
-        if on_time
-        else f"Received {txn['date']} — LATE (deadline was {deadline})."
-    )
-    category_note = (
-        f"Matched by amount (${txn['amount']:.2f}); "
-        f"category in Monarch was {txn['category']!r}, not {prop.category_label!r}. "
-        "Consider re-categorising in Monarch. "
+    rationale = (
+        f"Amount ${txn['amount']:,.2f} matches expected rent "
+        f"(within {AMOUNT_TOLERANCE_PCT:.0f}%), but category is "
+        f"{txn['category']!r} not {prop.category_label!r}. "
+        f"Account: {txn['account']}."
     )
     return PropertyResult(
         property_name=prop.name,
-        status=status,
+        status=PaymentStatus.REVIEW_NEEDED,
         matched_transaction=txn,
-        notes=f"{multi_note}{category_note}{timeliness_note}",
+        notes=f"{multi_note}{rationale}",
         step_resolved_by=2,
     )
 
