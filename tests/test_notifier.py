@@ -226,7 +226,8 @@ def test_n02_fallback_body_separates_paid_and_missing():
         _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
         _missing_result("Calmar"),
     ]
-    body = _fallback_body(results, RUN_DATE, error_message=None)
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
 
     assert "Links Lane" in body
     assert "Calmar" in body
@@ -340,8 +341,9 @@ def test_fallback_body_late_payment_has_yellow_highlight():
     results = [
         _late_result("Calmar", 3100.00, "Rental Income (Calmar)"),
     ]
-    body = _fallback_body(results, RUN_DATE, error_message=None)
-    assert "#FFEB3B" in body
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
+    assert "#FFF9C4" in body
     assert "#EF5350" not in body
 
 
@@ -349,36 +351,60 @@ def test_fallback_body_missing_has_red_highlight():
     results = [
         _missing_result("Calmar"),
     ]
-    body = _fallback_body(results, RUN_DATE, error_message=None)
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
     assert "#EF5350" in body
-    assert "#FFEB3B" not in body
+    assert "#FFF9C4" not in body
 
 
 def test_fallback_body_review_needed_has_orange_highlight():
     results = [
         _review_result("Calmar", 3100.00),
     ]
-    body = _fallback_body(results, RUN_DATE, error_message=None)
-    assert "#FF9800" in body
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
+    assert "#FFE0B2" in body
     assert "#EF5350" not in body
 
 
-def test_fallback_body_on_time_has_no_highlight():
+def test_fallback_body_on_time_has_green_highlight():
+    """Paid-on-time status has green highlight; no red, yellow, or orange."""
     results = [
         _paid_result("Links Lane", 2950.00, "Rental Income (Links Lane)"),
     ]
-    body = _fallback_body(results, RUN_DATE, error_message=None)
-    assert "#FFEB3B" not in body
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
+    assert "#C8E6C9" in body
+    assert "#FFF9C4" not in body
     assert "#EF5350" not in body
 
 
-def test_fallback_body_highlights_only_name_and_status_not_full_line():
-    """The yellow/red <span> must close before the transaction detail."""
+def test_fallback_body_highlights_only_status_not_name():
+    """The highlighted <span> must close before the amount detail; name is plain bold."""
     results = [_late_result("Calmar", 3100.00, "Rental Income (Calmar)")]
-    body = _fallback_body(results, RUN_DATE, error_message=None)
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
     # The highlight span must close (</span>) before the amount detail.
     highlight_end = body.find("</span>")
-    amount_start = body.find("$3100.00")
+    amount_start = body.find("$3,100.00")
     assert highlight_end != -1
     assert amount_start != -1
     assert highlight_end < amount_start
+    # Property name should NOT be inside a highlight span
+    calmar_pos = body.find("Calmar")
+    first_span_open = body.find('<span style=')
+    assert calmar_pos < first_span_open  # name appears before any highlight span
+
+
+def test_fallback_body_date_and_amount_format():
+    """Amounts use comma formatting and dates use M/D with deadline."""
+    # PROP_CALMAR: due_day=1, grace=5 → deadline = 2026-03-06 → "3/6"
+    # _late_result uses txn_date=2026-03-12 → "3/12"
+    results = [_late_result("Calmar", 3100.00, "Rental Income (Calmar)")]
+    cfg = _make_notifier_cfg()
+    body = _fallback_body(results, RUN_DATE, cfg, error_message=None)
+    assert "$3,100.00" in body
+    assert "Received: 3/12" in body
+    assert "Deadline: 3/6" in body
+    # ISO date format must NOT appear
+    assert "2026-03-12" not in body

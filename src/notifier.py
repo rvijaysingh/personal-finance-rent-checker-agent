@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
-from datetime import date
+from datetime import date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import TYPE_CHECKING
@@ -53,9 +53,10 @@ STATUS_LABELS = {
 _TRULY_MISSING = {PaymentStatus.MISSING}
 
 # Inline CSS for per-property status highlighting in HTML email.
-_YELLOW_STYLE = "background-color: #FFEB3B; padding: 2px 6px;"
-_RED_STYLE = "background-color: #EF5350; color: white; padding: 2px 6px;"
-_ORANGE_STYLE = "background-color: #FF9800; padding: 2px 6px;"
+_GREEN_STYLE  = "background-color: #C8E6C9; padding: 2px 6px;"
+_YELLOW_STYLE = "background-color: #FFF9C4; padding: 2px 6px;"
+_ORANGE_STYLE = "background-color: #FFE0B2; padding: 2px 6px;"
+_RED_STYLE    = "background-color: #EF5350; color: white; padding: 2px 6px;"
 
 
 def _compute_summary_line(results: list[PropertyResult]) -> str:
@@ -126,7 +127,7 @@ def send_notification(
         results, run_date, config.email_subject_prefix,
         error=error_message is not None,
     )
-    body = _fallback_body(results, run_date, error_message=error_message)
+    body = _fallback_body(results, run_date, config, error_message=error_message)
 
     if dry_run:
         print("=" * 60)
@@ -249,10 +250,16 @@ def _build_subject(
 def _fallback_body(
     results: list[PropertyResult],
     run_date: date,
+    config: "AppConfig",
     *,
     error_message: str | None,
 ) -> str:
-    """Produce an HTML email body from a Python template."""
+    """Produce an HTML email body from a Python template.
+
+    Per-property format:
+        <strong>Name</strong>: [highlighted status] | $X,XXX.XX | Received: M/D (Deadline: M/D) | Account
+    Only the status label is highlighted; the property name is plain bold.
+    """
     parts: list[str] = ["<html><body>"]
 
     if error_message:
@@ -275,27 +282,37 @@ def _fallback_body(
     parts.append(f"<p>Rent check for: {run_date.strftime('%B %Y')}</p>")
     parts.append("<hr>")
 
-    # Per-property bullet list — one line per property with inline CSS highlighting.
+    # Build property config lookup for deadline calculation.
+    prop_by_name = {p.name: p for p in config.properties}
+
+    # Per-property bullet list — one line per property.
     parts.append("<ul>")
     for r in results:
         label = STATUS_LABELS.get(r.status, r.status.value)
 
+        # Only the status label is highlighted; name stays plain bold.
         if r.status in LATE_STATUSES:
-            name_html = _highlight(f"<strong>{r.property_name}</strong>", _YELLOW_STYLE)
             status_html = _highlight(label, _YELLOW_STYLE)
         elif r.status in REVIEW_STATUSES:
-            name_html = _highlight(f"<strong>{r.property_name}</strong>", _ORANGE_STYLE)
             status_html = _highlight(label, _ORANGE_STYLE)
         elif r.status in _TRULY_MISSING:
-            name_html = _highlight(f"<strong>{r.property_name}</strong>", _RED_STYLE)
             status_html = _highlight(label, _RED_STYLE)
         else:
-            name_html = f"<strong>{r.property_name}</strong>"
-            status_html = label
+            status_html = _highlight(label, _GREEN_STYLE)
+
+        name_html = f"<strong>{r.property_name}</strong>"
 
         if r.matched_transaction:
             t = r.matched_transaction
-            txn_detail = f" | ${t['amount']:.2f} | {t['date']} | {t['account']}"
+            received_str = f"{t['date'].month}/{t['date'].day}"
+            prop = prop_by_name.get(r.property_name)
+            if prop:
+                deadline = run_date.replace(day=prop.due_day) + timedelta(days=prop.grace_period_days)
+                deadline_str = f"{deadline.month}/{deadline.day}"
+                date_detail = f"Received: {received_str} (Deadline: {deadline_str})"
+            else:
+                date_detail = f"Received: {received_str}"
+            txn_detail = f" | ${t['amount']:,.2f} | {date_detail} | {t['account']}"
         else:
             txn_detail = ""
 
