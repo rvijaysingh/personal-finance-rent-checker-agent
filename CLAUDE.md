@@ -29,6 +29,9 @@ missing, wrong amount).
   (credentials saved in browser, no programmatic login needed each run)
 - Email: Gmail SMTP (credentials in .env.json)
 - No external APIs for Monarch (browser scraping only)
+- Crash alerting: agent-shared-library (`agent_shared.alerts.send_crash_alert`)
+  installed globally via pip. Sends an email on any unhandled exception before
+  re-raising, so scheduled failures are never silent.
 
 ## Documentation Structure
 

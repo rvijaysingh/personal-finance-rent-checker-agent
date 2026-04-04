@@ -224,6 +224,35 @@ being logged as rent.
 
 ---
 
+## R11: Agent Crashes Silently When Scheduled
+
+**Likelihood:** Medium — unhandled exceptions in scheduled tasks produce no
+visible output and leave the operator unaware that the run did not complete.
+
+**What goes wrong:** An uncaught exception (e.g., an import error, an
+unexpected Playwright failure, or an unhandled edge case in business logic)
+causes the process to exit with a non-zero code. If the agent is run via
+Windows Task Scheduler or a similar mechanism, the failure may be silently
+swallowed with no notification to the operator. `run_history.json` receives no
+new record, so the idempotency check treats the month as "not yet run" and
+re-runs on the next invocation — potentially hitting the same crash repeatedly.
+
+**Mitigations:**
+- `main()` wraps `_run()` in a top-level `try/except`. Any unhandled exception
+  triggers `_send_crash_alert_best_effort`, which calls
+  `agent_shared.alerts.send_crash_alert` with the agent name, exception, and
+  full traceback before re-raising.
+- `send_crash_alert` (from the shared library) logs and returns silently — it
+  never raises. Alert delivery failure cannot compound the original crash.
+- Gmail credentials are sourced from the loaded `AppConfig`. If config loading
+  itself is the cause of the crash, the fallback is the `GMAIL_SENDER` and
+  `GMAIL_PASSWORD` environment variables. If neither is available, the alert is
+  skipped and an ERROR is logged.
+- The exception is always re-raised after the alert, ensuring the process
+  exits with a non-zero code for scheduler-level failure detection.
+
+---
+
 ## Error Handling Strategy (By Dependency)
 
 | Dependency | Failure mode | System behaviour |

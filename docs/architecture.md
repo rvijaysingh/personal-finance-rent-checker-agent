@@ -163,6 +163,16 @@ All cross-module types (`TransactionRecord`, `PropertyConfig`, `PropertyResult`,
 `PaymentStatus`) live in one file. Prevents circular imports; types import
 nothing from `src/`.
 
+**DD11: Crash Alert via agent-shared-library**
+Any unhandled exception that escapes `_run()` is caught in `main()`. Before
+re-raising (so the process exits non-zero), `_send_crash_alert_best_effort`
+calls `agent_shared.alerts.send_crash_alert` with the agent name, exception,
+and full traceback. Gmail credentials come from the loaded config; if config
+loading itself failed, the fallback is `GMAIL_SENDER`/`GMAIL_PASSWORD`
+environment variables. If neither source provides credentials the alert is
+skipped and an ERROR is logged. `send_crash_alert` never raises, so alert
+delivery failure cannot compound the original crash.
+
 **DD10: `completed_email_failed` Status + Full Pipeline Retry**
 SMTP failure writes `completed_email_failed` to `run_history.json`. The next
 invocation detects this status, logs the prior failure, and re-runs the full

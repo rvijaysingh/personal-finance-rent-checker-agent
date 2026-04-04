@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import traceback
@@ -57,6 +58,59 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    try:
+        return _run(args)
+    except Exception as exc:
+        tb_str = traceback.format_exc()
+        logger.error("Unhandled exception: %s\n%s", exc, tb_str)
+        _send_crash_alert_best_effort(exc, tb_str)
+        raise
+
+
+def _send_crash_alert_best_effort(exc: Exception, tb_str: str) -> None:
+    """Send a crash alert email, falling back to env vars if config is unavailable."""
+    try:
+        from agent_shared.alerts import send_crash_alert
+    except ImportError:
+        logger.error("agent_shared not installed; cannot send crash alert")
+        return
+
+    # Try to get credentials from config first; fall back to environment variables.
+    gmail_sender: str | None = None
+    gmail_password: str | None = None
+    gmail_recipient: str | None = None
+
+    try:
+        from src.config_loader import load_config
+        cfg = load_config()
+        gmail_sender = cfg.gmail_sender
+        gmail_password = cfg.gmail_password
+        gmail_recipient = cfg.gmail_recipient
+    except Exception:
+        gmail_sender = os.environ.get("GMAIL_SENDER")
+        gmail_password = os.environ.get("GMAIL_PASSWORD")
+        # Recipient not available from env — fall back to sender as self-notification
+        gmail_recipient = gmail_sender
+
+    if not gmail_sender or not gmail_password or not gmail_recipient:
+        logger.error(
+            "Cannot send crash alert: gmail credentials unavailable "
+            "(config failed and GMAIL_SENDER/GMAIL_PASSWORD env vars not set)"
+        )
+        return
+
+    send_crash_alert(
+        agent_name="personal-finance-rent-checker-agent",
+        error=exc,
+        traceback_str=tb_str,
+        gmail_sender=gmail_sender,
+        gmail_password=gmail_password,
+        recipient=gmail_recipient,
+    )
+
+
+def _run(args: argparse.Namespace) -> int:
+    """Inner run logic — all unhandled exceptions bubble up to main()."""
     today = date.today()
     logger.info("=== Rent Payment Checker starting for %s ===", today.strftime("%B %Y"))
 
