@@ -63,7 +63,9 @@ matches. `_map_transaction()` field names (`date`, `amount`, `merchant.name`,
 expense. `TransactionRecord.amount` follows this convention.
 
 **Two-phase page load selectors (still used for timing)**:
-- Phase 1: `[class*='SideBar__Root']` — app shell ready.
+- Phase 1: `[data-external-id='nav-bar-link']` — app shell ready. (Was
+  `[class*='SideBar__Root']`; Monarch removed that styled-components class.
+  The `data-external-id` nav-link attribute is more stable. Verified 2026-06-26.)
 - Phase 2: `[class*='TransactionsList__ListContainer']` or
   `[class*='TransactionOverview__Root']` — initial API call returned and React
   has rendered the list. Flush captured responses immediately after phase 2 fires.
@@ -278,6 +280,20 @@ and mark the property as `LLM_SKIPPED_MISSING` rather than waiting 300 s to
 time out. The check is inside the existing `OllamaUnavailableError` try/except
 block in `_step3_llm_match`.
 
+### TimeoutError is not URLError
+
+`TimeoutError` (builtin) is not a subclass of `urllib.error.URLError`. The
+Ollama health check (`/api/tags`, 5 s) can pass while the subsequent inference
+call hangs for 300 s and raises `TimeoutError`. If `_call_ollama` only catches
+`URLError`, the timeout propagates uncaught and crashes the pipeline — the
+graceful fallback to MISSING never runs.
+
+Fix: catch `(urllib.error.URLError, TimeoutError, ConnectionError, OSError)`
+in `_call_ollama` and convert all of them to `OllamaUnavailableError`.
+
+Discovered: April 2-3 2026 production failures. Health check passed, inference
+timed out, pipeline crashed instead of degrading gracefully.
+
 ### Other notes
 - Monarch's virtualized transaction list does not trigger new
   GraphQL requests on scroll. Direct API replay with captured
@@ -314,13 +330,28 @@ Playwright required — all external dependencies are mocked.
 
 ### Key patching patterns
 
-**Step 3 (LLM) tests** — must patch BOTH functions or the health check makes
-a real network call and the LLM is silently skipped:
+**Step 3 (LLM) tests** — must patch BOTH Ollama functions or the health check
+makes a real network call and the LLM is silently skipped:
 ```python
 @patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
 @patch("src.transaction_matcher._call_ollama")
 def test_xxx(mock_llm, mock_health):  # closest decorator = first arg
 ```
+
+**Step 3 tests targeting the Ollama path specifically** — since Anthropic is
+the primary LLM, also patch `_call_anthropic` (or set `cfg.anthropic_api_key = ""`)
+to ensure Anthropic is skipped and Ollama is actually exercised:
+```python
+@patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
+@patch("src.transaction_matcher._call_ollama")
+@patch("src.transaction_matcher._call_anthropic")
+def test_xxx(mock_anthropic, mock_ollama, mock_health):
+    cfg = make_cfg_mock([...])
+    cfg.anthropic_api_key = ""   # skip Anthropic, go straight to Ollama
+    ...
+```
+Without this, `_call_anthropic` is invoked first (if a key is present in config)
+and the Ollama mock is never reached.
 
 **Notifier email content** — `_send_smtp` produces a `MIMEMultipart("alternative")`
 message. `msg.as_string()` base64-encodes the HTML body. Assertions against the

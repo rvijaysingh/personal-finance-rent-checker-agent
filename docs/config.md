@@ -51,7 +51,10 @@ point to the same `.env.json` via `ENV_CONFIG_PATH`.
   "gmail_recipient":                "your-address@gmail.com",
   "monarch_browser_profile_path":   "C:\\Users\\YOU\\AppData\\Local\\playwright-rent-profile",
   "ollama_endpoint":                "http://localhost:11434",
-  "ollama_model":                   "qwen3:8b"
+  "ollama_model":                   "qwen3:8b",
+  "anthropic_api_keys": {
+    "rent-checker": "sk-ant-..."
+  }
 }
 ```
 
@@ -63,6 +66,7 @@ point to the same `.env.json` via `ENV_CONFIG_PATH`.
 | `monarch_browser_profile_path` | string | Yes | Absolute path to Playwright persistent profile directory |
 | `ollama_endpoint` | string | Yes | Must start with `http`. e.g. `http://localhost:11434` |
 | `ollama_model` | string | Yes | e.g. `qwen3:8b` |
+| `anthropic_api_keys` | object | No | Dict of per-agent Anthropic API keys. This agent reads `rent-checker`. If absent or key missing, Anthropic Step 3 is skipped and Ollama is used instead. |
 
 **Gmail setup:** Use a Gmail App Password (not your account password). Go to
 Google Account → Security → 2-Step Verification → App passwords.

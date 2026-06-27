@@ -9,7 +9,7 @@
   for the actual parsing fixture.
 
   Selectors used by monarch_scraper.py:
-    Phase 1: [class*='SideBar__Root']
+    Phase 1: [data-external-id='nav-bar-link']
     Phase 2: [class*='TransactionsList__ListContainer'] or [class*='TransactionOverview__Root']
     Scroll:  [class*='Page__ScrollHeaderContainer']
 -->
@@ -21,7 +21,9 @@
 <body>
   <!-- Phase 1 sentinel: sidebar shell -->
   <div class="SideBar__Root-placeholder">
-    <nav>Monarch Money Sidebar</nav>
+    <nav>
+      <a data-external-id="nav-bar-link" href="/transactions">Transactions</a>
+    </nav>
   </div>
 
   <!-- Phase 2 sentinel: transaction list container -->

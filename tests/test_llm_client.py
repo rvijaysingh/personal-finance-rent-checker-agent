@@ -1,4 +1,4 @@
-"""LLM integration tests — L-01 through L-07.
+"""LLM integration tests — L-01 through L-08.
 
 Tests JSON parsing (`_parse_json_response`), Ollama HTTP behaviour, and the
 Anthropic primary + Ollama fallback chain for Step 3.
@@ -17,6 +17,7 @@ import pytest
 from src.models import PaymentStatus, PropertyResult, TransactionRecord
 from src.transaction_matcher import (
     OllamaUnavailableError,
+    _call_ollama,
     _parse_json_response,
     _step3_llm_match,
 )
@@ -261,4 +262,42 @@ def test_l07_no_anthropic_key_skips_anthropic_uses_ollama(mock_anthropic, mock_o
 
     assert result.status == PaymentStatus.REVIEW_NEEDED
     mock_anthropic.assert_not_called()
+    mock_ollama.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# L-08: TimeoutError in _call_ollama is caught and converted gracefully
+# ---------------------------------------------------------------------------
+
+
+@patch("urllib.request.urlopen")
+def test_l08_timeout_error_in_call_ollama_raises_ollama_unavailable(mock_urlopen):
+    """L-08: TimeoutError from urlopen is caught and converted to OllamaUnavailableError."""
+    mock_urlopen.side_effect = TimeoutError("timed out")
+
+    with pytest.raises(OllamaUnavailableError):
+        _call_ollama("http://localhost:11434", "qwen3:8b", "test prompt")
+
+
+@patch("src.transaction_matcher._check_ollama_reachable", return_value=True)
+@patch("src.transaction_matcher._call_ollama")
+@patch("src.transaction_matcher._call_anthropic")
+def test_l08_anthropic_failure_plus_ollama_timeout_returns_missing(
+    mock_anthropic, mock_ollama, mock_health
+):
+    """L-08: Anthropic raises then Ollama raises TimeoutError → MISSING, no pipeline crash."""
+    mock_anthropic.side_effect = OSError("Anthropic unreachable")
+    mock_ollama.side_effect = OllamaUnavailableError("timed out after 300s")
+
+    cfg = make_cfg_mock([PROP_LINKS_LANE])
+    cfg.anthropic_api_key = "sk-ant-test-key"
+    cfg.anthropic_model = "claude-haiku-4-5-20251001"
+    txn = make_txn(category="Uncategorized")
+
+    result = _step3_llm_match(PROP_LINKS_LANE, [txn], cfg, CHECK_MONTH)
+
+    assert result.status == PaymentStatus.MISSING
+    assert result.step_resolved_by == 3
+    assert "unreachable" in result.notes.lower() or "unavailable" in result.notes.lower()
+    mock_anthropic.assert_called_once()
     mock_ollama.assert_called_once()

@@ -236,7 +236,7 @@ def _build_and_validate(
     ollama_model = _req_str(env, "ollama_model", ".env.json")
 
     # Anthropic settings — optional
-    anthropic_api_key = env.get("anthropic_api_key_rent_checker", "")
+    anthropic_api_key = env.get("anthropic_api_keys", {}).get("rent-checker", "")
     anthropic_model = env.get("anthropic_model", "claude-haiku-4-5-20251001")
 
     # Property definitions — from agent_config.json

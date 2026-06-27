@@ -211,3 +211,42 @@ def test_c05_empty_properties_array_raises_with_description(tmp_path, monkeypatc
         load_config()
 
     assert "non-empty list" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# C-06: anthropic_api_keys nested dict → key read correctly
+# ---------------------------------------------------------------------------
+
+
+def test_c06_anthropic_api_key_read_from_nested_dict(tmp_path, monkeypatch):
+    """C-06: anthropic_api_keys.rent-checker in .env.json → loaded into AppConfig.anthropic_api_key."""
+    env_path = _write_env(
+        tmp_path,
+        anthropic_api_keys={"rent-checker": "sk-ant-test-key"},
+    )
+    _write_agent_config(tmp_path)
+    _write_prompts(tmp_path)
+    monkeypatch.setenv("ENV_CONFIG_PATH", str(env_path))
+    monkeypatch.setattr("src.config_loader.REPO_ROOT", tmp_path)
+
+    config = load_config()
+
+    assert config.anthropic_api_key == "sk-ant-test-key"
+
+
+# ---------------------------------------------------------------------------
+# C-07: anthropic_api_keys missing entirely → defaults to empty string, no error
+# ---------------------------------------------------------------------------
+
+
+def test_c07_missing_anthropic_api_keys_defaults_to_empty_string(tmp_path, monkeypatch):
+    """C-07: anthropic_api_keys absent from .env.json → AppConfig.anthropic_api_key is ''."""
+    env_path = _write_env(tmp_path)  # no anthropic_api_keys key at all
+    _write_agent_config(tmp_path)
+    _write_prompts(tmp_path)
+    monkeypatch.setenv("ENV_CONFIG_PATH", str(env_path))
+    monkeypatch.setattr("src.config_loader.REPO_ROOT", tmp_path)
+
+    config = load_config()
+
+    assert config.anthropic_api_key == ""

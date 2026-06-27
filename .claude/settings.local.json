@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python3:*)",
       "Bash(python:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "PowerShell(python -m pytest tests/ -q)"
     ]
   }
 }

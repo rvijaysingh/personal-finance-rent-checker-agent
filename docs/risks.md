@@ -76,6 +76,16 @@ plain template; operator receives a less useful summary.
   GPU memory, preventing cold-start delays during Step 3).
 - Health check (`/api/tags`, 5 s timeout) before each Step 3 call. If it fails,
   raise `OllamaUnavailableError` immediately rather than waiting 300 s to time out.
+  **Important gap:** the health check only confirms the Ollama *process* is alive.
+  It does not guarantee inference will succeed. The Ollama service can pass `/api/tags`
+  while a subsequent generate call still times out (model unloaded, GPU under load,
+  or system resource contention). The health check prevents the worst-case 300 s hang
+  when Ollama is fully down, but not when it is up-but-slow.
+- `_call_ollama` catches `(urllib.error.URLError, TimeoutError, ConnectionError, OSError)`
+  and converts all of them to `OllamaUnavailableError`. This ensures the graceful
+  degradation path in `_step3_llm_match` executes regardless of whether Ollama is
+  unreachable or simply too slow to respond. (Before this fix, `TimeoutError` —
+  a builtin, not a subclass of `URLError` — propagated uncaught and crashed the pipeline.)
 - Steps 1 and 2 are fully deterministic and run without Ollama. Only Step 3 and
   email generation require it.
 - If Ollama is unreachable: Step 3 properties → `LLM_SKIPPED_MISSING`.
@@ -261,6 +271,7 @@ re-runs on the next invocation — potentially hitting the same crash repeatedly
 | Monarch session | Login redirect | `ScraperError` with re-login instructions |
 | Anthropic (Step 3) | Unreachable / key missing | Falls back to Ollama; if Ollama also down → `MISSING` |
 | Ollama (Step 3) | Unreachable | `MISSING` for unresolved properties (if Anthropic also failed) |
+| Ollama (Step 3) | Timeout during inference | Same as unreachable — `OllamaUnavailableError` → `MISSING` (caught by expanded except clause in `_call_ollama`) |
 | Gmail SMTP | Delivery failure | `completed_email_failed` + stored results for retry |
 | `run_history.json` | Corrupt / missing | Treat as empty; log warning; proceed |
 | Config files | Missing / invalid | `ConfigError` at startup; no external calls made |

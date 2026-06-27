@@ -383,16 +383,23 @@ def _step3_llm_match(
     # --- Anthropic primary ---
     raw_response: str | None = None
     if getattr(config, "anthropic_api_key", ""):
+        logger.info("Attempting Anthropic API for Step 3 (property: %s)", prop.name)
         try:
             raw_response = _call_anthropic(
                 config.anthropic_api_key, config.anthropic_model, prompt
             )
+            logger.info("Anthropic API succeeded for Step 3 (property: %s)", prop.name)
             logger.debug("Step 3 Anthropic response for %s:\n%s", prop.name, raw_response)
         except Exception as exc:
             logger.warning(
                 "Anthropic unavailable for Step 3 (%s): %s. Falling back to Ollama.",
                 prop.name, exc,
             )
+    else:
+        logger.info(
+            "Anthropic API key not configured, falling through to Ollama (property: %s)",
+            prop.name,
+        )
 
     # --- Ollama fallback ---
     if raw_response is None:
@@ -538,7 +545,7 @@ def _call_ollama(endpoint: str, model: str, prompt: str) -> str:
         with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return data.get("response", "")
-    except urllib.error.URLError as exc:
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
         raise OllamaUnavailableError(
             f"Cannot reach Ollama at {endpoint}: {exc}"
         ) from exc

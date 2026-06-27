@@ -47,7 +47,10 @@ MONARCH_TRANSACTIONS_URL = "https://app.monarch.com/transactions"
 LOGIN_URL_FRAGMENT = "/login"
 
 # Phase 1 load sentinel — sidebar renders before transaction data.
-SELECTOR_APP_LOADED = "[class*='SideBar__Root']"
+# Uses the nav links' data-external-id attribute rather than a styled-components
+# class name, which is more stable across Monarch UI changes.
+# Last verified against Monarch's UI on 2026-06-26.
+SELECTOR_APP_LOADED = "[data-external-id='nav-bar-link']"
 
 # Phase 2 load sentinel — transaction list container appears once the
 # initial API call returns. Waiting for this guarantees the first batch
